@@ -125,10 +125,10 @@ class PrettyOuput():
                         print("Group '" + group['attributes']['name'][0] + "' has member: " + dc + "\\" + user)
 
 def main():
-    parser = argparse.ArgumentParser(description='LDAPDomainDump to pretty output like enum4linux.')
+    parser = argparse.ArgumentParser(description='ADWSDomainDump to pretty output like enum4linux.')
 
     #Main parameters
-    parser.add_argument("-d", "--directory", help="The ldapdomaindump directory where the json files are saved. Required files: domain_users.json, domain_groups.json and domain_policy.json")
+    parser.add_argument("-d", "--directory", help="The adwsdomaindump directory where the json files are saved. Required files: domain_users.json, domain_groups.json and domain_policy.json")
     args = parser.parse_args()
 
     if args.directory:

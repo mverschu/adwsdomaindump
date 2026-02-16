@@ -5,7 +5,7 @@ import logging
 import json
 import codecs
 import re
-from ldapdomaindump import trust_flags, trust_directions
+from adwsdomaindump import trust_flags, trust_directions
 
 logging.basicConfig()
 logger = logging.getLogger('ldd2bloodhound')
@@ -160,10 +160,10 @@ class BloodHoundConverter():
         return
 
 def ldd2bloodhound():
-    parser = argparse.ArgumentParser(description='LDAPDomainDump to BloodHound CSV converter utility. Supports users/computers/trusts conversion.')
+    parser = argparse.ArgumentParser(description='ADWSDomainDump to BloodHound CSV converter utility. Supports users/computers/trusts conversion.')
 
     #Main parameters
-    parser.add_argument("files", type=str, nargs='+', metavar='FILENAME', help="The ldapdomaindump json files to load. Required files: domain_users.json and domain_groups.json")
+    parser.add_argument("files", type=str, nargs='+', metavar='FILENAME', help="The adwsdomaindump json files to load. Required files: domain_users.json and domain_groups.json")
     parser.add_argument("-d", "--debug", action='store_true', help="Enable debug logger")
 
     args = parser.parse_args()

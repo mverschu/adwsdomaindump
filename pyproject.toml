@@ -3,28 +3,29 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ldapdomaindump"
-version = "0.10.1"
-description = "Active Directory information dumper via LDAP"
+name = "adwsdomaindump"
+version = "0.11.0"
+description = "Active Directory information dumper via ADWS"
 authors = [
-  { name = "Dirk-jan Mollema", email = "dirkjan@dirkjanm.io" }
+  { name = "mverschu" }
 ]
 urls = { "Homepage" = "https://github.com/dirkjanm/ldapdomaindump/" }
 requires-python = ">=3.6"
-license = "MIT"
-license-files = ["LICENSE"]
+license = {text = "MIT"}
 dependencies = [
   "dnspython",
-  "ldap3>=2.5,!=2.5.2,!=2.5.0,!=2.6"
+  "impacket>=0.11.0",
+  "pycryptodomex"
 ]
 
 [tool.setuptools.packages.find]
-include = ["ldapdomaindump"]
+where = ["."]
+namespaces = false
 
 [tool.setuptools.package-data]
-ldapdomaindump = ["style.css"]
+adwsdomaindump = ["style.css"]
 
 [project.scripts]
-ldapdomaindump = "ldapdomaindump:main"
-ldd2bloodhound = "ldapdomaindump.convert:ldd2bloodhound"
-ldd2pretty = "ldapdomaindump.pretty:main"
+adwsdomaindump = "adwsdomaindump:main"
+adwsd2bloodhound = "adwsdomaindump.convert:ldd2bloodhound"
+adwsd2pretty = "adwsdomaindump.pretty:main"
