@@ -1,11 +1,6 @@
 # ADWSDomainDump
 Active Directory information dumper via ADWS (Active Directory Web Services), fork of LDAPDomainDump (https://github.com/dirkjanm/ldapdomaindump/).
 
-## Introduction
-In an Active Directory domain, a lot of interesting information can be retrieved via ADWS by any authenticated user (or machine).
-This makes ADWS an interesting protocol for gathering information in the recon phase of a pentest of an internal network.
-A problem is that data from ADWS often is not available in an easy to read format.
-
 ## Install
 Recommended install:
 
@@ -40,5 +35,6 @@ Original work: Copyright (c) 2017 Dirk-jan Mollema
 
 ## License
 MIT
+
 
 
