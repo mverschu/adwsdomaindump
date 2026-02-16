@@ -1,2 +1,2 @@
-include ldapdomaindump/style.css
+include adwsdomaindump/style.css
 include LICENSE README.md

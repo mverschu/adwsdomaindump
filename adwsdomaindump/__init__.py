@@ -1,6 +1,7 @@
 ####################
 #
 # Copyright (c) 2017 Dirk-jan Mollema
+# Copyright (c) 2024 mverschu (ADWS adaptation)
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -25,12 +26,50 @@ import sys, os, re, codecs, json, argparse, getpass, base64
 # import class and constants
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
-import ldap3
-from ldap3 import Server, Connection, SIMPLE, SYNC, ALL, SASL, NTLM
-from ldap3.core.exceptions import LDAPKeyError, LDAPAttributeError, LDAPCursorError, LDAPInvalidDnError
-from ldap3.abstract import attribute, attrDef
-from ldap3.utils import dn
-from ldap3.protocol.formatters.formatters import format_sid
+# ADWS imports instead of LDAP
+from .adws_wrapper import ADWSServer, ADWSConnection, ADWSEntry, ADWSAttribute
+from impacket.ldap.ldaptypes import LDAP_SID
+
+# Compatibility exceptions for existing code
+class LDAPKeyError(KeyError):
+    pass
+
+class LDAPAttributeError(AttributeError):
+    pass
+
+class LDAPCursorError(IndexError):
+    pass
+
+class LDAPInvalidDnError(ValueError):
+    pass
+
+# Compatibility classes for existing code
+class attribute:
+    class Attribute:
+        def __init__(self, attr_def, entry, value):
+            self.key = attr_def if isinstance(attr_def, str) else getattr(attr_def, 'name', 'unknown')
+            self.value = value
+            self.values = [value] if not isinstance(value, list) else value
+            self.raw_values = self.values
+
+class attrDef:
+    class AttrDef:
+        def __init__(self, name):
+            self.name = name
+
+# DN parsing utility (simplified)
+class dn:
+    @staticmethod
+    def parse_dn(dn_string):
+        """Simple DN parser - returns list of tuples like [('CN', 'value'), ...]"""
+        result = []
+        parts = dn_string.split(',')
+        for part in parts:
+            part = part.strip()
+            if '=' in part:
+                key, value = part.split('=', 1)
+                result.append((key.strip(), value.strip()))
+        return result
 
 # dnspython, for resolving hostnames
 import dns.resolver
@@ -172,25 +211,33 @@ class domainDumper():
 
     #Get the server root from the default naming context
     def getRoot(self):
-        return self.server.info.other['defaultNamingContext'][0]
+        try:
+            return self.server.info.other['defaultNamingContext'][0]
+        except (KeyError, IndexError):
+            # Fallback: construct from domain
+            domain = self.server.domain
+            return f"DC={',DC='.join(domain.split('.'))}"
 
     #Query the groups of the current user
     def getCurrentUserGroups(self, username, domainsid=None):
         self.connection.search(self.root, '(&(objectCategory=person)(objectClass=user)(sAMAccountName=%s))' % username, attributes=['cn', 'memberOf', 'primaryGroupId'])
         try:
-            groups = self.connection.entries[0]['memberOf'].values
-            if domainsid is not None:
-                groups.append(self.getGroupDNfromID(domainsid, self.connection.entries[0]['primaryGroupId'].value))
+            entry = self.connection.entries[0]
+            member_of = entry['memberOf'].values if 'memberOf' in entry else []
+            groups = member_of if isinstance(member_of, list) else [member_of]
+            if domainsid is not None and 'primaryGroupId' in entry:
+                groups.append(self.getGroupDNfromID(domainsid, entry['primaryGroupId'].value))
             return groups
-        except LDAPKeyError:
+        except (LDAPKeyError, KeyError, IndexError):
             #No groups, probably just member of the primary group
-            if domainsid is not None:
-                primarygroup = self.getGroupDNfromID(domainsid, self.connection.entries[0]['primaryGroupId'].value)
-                return [primarygroup]
-            else:
-                return []
-        except IndexError:
-            #The username does not exist (might be a computer account)
+            try:
+                if domainsid is not None and len(self.connection.entries) > 0:
+                    entry = self.connection.entries[0]
+                    if 'primaryGroupId' in entry:
+                        primarygroup = self.getGroupDNfromID(domainsid, entry['primaryGroupId'].value)
+                        return [primarygroup]
+            except (KeyError, IndexError):
+                pass
             return []
 
     #Check if the user is part of the Domain Admins or Enterprise Admins group, or any of their subgroups
@@ -222,7 +269,9 @@ class domainDumper():
         if self.config.minimal:
             self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user))', attributes=MINIMAL_USERATTRIBUTES, paged_size=500, generator=False)
         else:
-            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user))', attributes=ldap3.ALL_ATTRIBUTES, paged_size=500, generator=False)
+            # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
+            all_attrs = ['*']  # ADWS wrapper will expand this
+            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user))', attributes=all_attrs, paged_size=500, generator=False)
         return self.connection.entries
 
     #Get all computers in the domain
@@ -230,7 +279,9 @@ class domainDumper():
         if self.config.minimal:
             self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectClass=computer)(objectClass=user))', attributes=MINIMAL_COMPUTERATTRIBUTES, paged_size=500, generator=False)
         else:
-            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectClass=computer)(objectClass=user))', attributes=ldap3.ALL_ATTRIBUTES, paged_size=500, generator=False)
+            # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
+            all_attrs = ['*']  # ADWS wrapper will expand this
+            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectClass=computer)(objectClass=user))', attributes=all_attrs, paged_size=500, generator=False)
         return self.connection.entries
 
     #Get all user SPNs
@@ -238,7 +289,9 @@ class domainDumper():
         if self.config.minimal:
             self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*))', attributes=MINIMAL_USERATTRIBUTES, paged_size=500, generator=False)
         else:
-            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*))', attributes=ldap3.ALL_ATTRIBUTES, paged_size=500, generator=False)
+            # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
+            all_attrs = ['*']  # ADWS wrapper will expand this
+            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*))', attributes=all_attrs, paged_size=500, generator=False)
         return self.connection.entries
 
     #Get all defined groups
@@ -246,34 +299,49 @@ class domainDumper():
         if self.config.minimal:
             self.connection.extend.standard.paged_search(self.root, '(objectClass=group)', attributes=MINIMAL_GROUPATTRIBUTES, paged_size=500, generator=False)
         else:
-            self.connection.extend.standard.paged_search(self.root, '(objectClass=group)', attributes=ldap3.ALL_ATTRIBUTES, paged_size=500, generator=False)
+            # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
+            all_attrs = ['*']  # ADWS wrapper will expand this
+            self.connection.extend.standard.paged_search(self.root, '(objectClass=group)', attributes=all_attrs, paged_size=500, generator=False)
         return self.connection.entries
 
     #Get the domain policies (such as lockout policy)
     def getDomainPolicy(self):
-        self.connection.search(self.root, '(objectClass=domain)', attributes=ldap3.ALL_ATTRIBUTES)
+        # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
+        all_attrs = ['*']  # ADWS wrapper will expand this
+        self.connection.search(self.root, '(objectClass=domain)', attributes=all_attrs)
         return self.connection.entries
 
     #Get domain trusts
     def getTrusts(self):
-        self.connection.search(self.root, '(objectClass=trustedDomain)', attributes=ldap3.ALL_ATTRIBUTES)
+        # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
+        all_attrs = ['*']  # ADWS wrapper will expand this
+        self.connection.search(self.root, '(objectClass=trustedDomain)', attributes=all_attrs)
         return self.connection.entries
 
     #Get all defined security groups
     #Syntax from:
     #https://ldapwiki.willeke.com/wiki/Active%20Directory%20Group%20Related%20Searches
     def getAllSecurityGroups(self):
-        self.connection.search(self.root, '(groupType:1.2.840.113556.1.4.803:=2147483648)', attributes=ldap3.ALL_ATTRIBUTES)
+        # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
+        all_attrs = ['*']  # ADWS wrapper will expand this
+        self.connection.search(self.root, '(groupType:1.2.840.113556.1.4.803:=2147483648)', attributes=all_attrs)
         return self.connection.entries
 
     #Get the SID of the root object
     def getRootSid(self):
         self.connection.search(self.root, '(objectClass=domain)', attributes=['objectSid'])
         try:
-            sid = self.connection.entries[0].objectSid
-        except (LDAPAttributeError, LDAPCursorError, IndexError):
+            entry = self.connection.entries[0]
+            sid_attr = entry['objectSid'] if 'objectSid' in entry else None
+            if sid_attr:
+                sid = sid_attr.value
+                if isinstance(sid, bytes):
+                    from impacket.ldap.ldaptypes import LDAP_SID
+                    sid = LDAP_SID(sid).formatCanonical()
+                return sid
+        except (LDAPAttributeError, LDAPCursorError, IndexError, KeyError):
             return False
-        return sid
+        return False
 
     #Get group members recursively using LDAP_MATCHING_RULE_IN_CHAIN (1.2.840.113556.1.4.1941)
     def getRecursiveGroupmembers(self, groupdn):
@@ -283,7 +351,14 @@ class domainDumper():
     #Resolve group ID to DN
     def getGroupDNfromID(self, domainsid, gid):
         self.connection.search(self.root, '(objectSid=%s-%d)' % (domainsid, gid), attributes=['distinguishedName'])
-        return self.connection.entries[0]['distinguishedName'].value
+        try:
+            entry = self.connection.entries[0]
+            dn_attr = entry['distinguishedName'] if 'distinguishedName' in entry else None
+            if dn_attr:
+                return dn_attr.value
+        except (IndexError, KeyError):
+            pass
+        return None
 
     #Get Domain Admins group DN
     def getDAGroupDN(self, domainsid):
@@ -302,34 +377,35 @@ class domainDumper():
     def lookupComputerDnsNames(self):
         dnsresolver = dns.resolver.Resolver()
         dnsresolver.lifetime = 2
-        ipdef = attrDef.AttrDef('ipv4')
         if self.config.dnsserver != '':
             dnsresolver.nameservers = [self.config.dnsserver]
         for computer in self.computers:
             try:
-                answers = dnsresolver.query(computer.dNSHostName.values[0], 'A')
-                ip = str(answers.response.answer[0][0])
+                dns_hostname = computer['dNSHostName'].value if 'dNSHostName' in computer else None
+                if not dns_hostname:
+                    ip = 'error.NOHOSTNAME'
+                else:
+                    answers = dnsresolver.query(dns_hostname, 'A')
+                    ip = str(answers.response.answer[0][0])
             except dns.resolver.NXDOMAIN:
                 ip = 'error.NXDOMAIN'
             except dns.resolver.Timeout:
                 ip = 'error.TIMEOUT'
-            except (LDAPAttributeError, LDAPCursorError):
+            except (LDAPAttributeError, LDAPCursorError, KeyError):
                 ip = 'error.NOHOSTNAME'
             #Construct a custom attribute as workaround
-            ipatt = attribute.Attribute(ipdef, computer, None)
-            ipatt.__dict__['_response'] = ip
-            ipatt.__dict__['raw_values'] = [ip]
-            ipatt.__dict__['values'] = [ip]
+            ipatt = ADWSAttribute('IPv4', ip)
             #Add the attribute to the entry's dictionary
-            computer._state.attributes['IPv4'] = ipatt
+            computer._attributes['IPv4'] = ipatt
 
     #Create a dictionary of all operating systems with the computer accounts that are associated
     def sortComputersByOS(self, items):
         osdict = {}
         for computer in items:
             try:
-                cos = computer.operatingSystem.value or 'Unknown'
-            except (LDAPAttributeError, LDAPCursorError):
+                cos = computer['operatingSystem'].value if 'operatingSystem' in computer else None
+                cos = cos or 'Unknown'
+            except (LDAPAttributeError, LDAPCursorError, KeyError):
                 cos = 'Unknown'
             try:
                 osdict[cos].append(computer)
@@ -343,14 +419,31 @@ class domainDumper():
     def mapGroupsIdsToDns(self):
         dnmap = {}
         for group in self.groups:
-            gid = int(group.objectSid.value.split('-')[-1])
-            dnmap[gid] = group.distinguishedName.values[0]
+            try:
+                sid = group['objectSid'].value
+                if isinstance(sid, bytes):
+                    from impacket.ldap.ldaptypes import LDAP_SID
+                    sid = LDAP_SID(sid).formatCanonical()
+                gid = int(sid.split('-')[-1])
+                dn = group['distinguishedName'].value if 'distinguishedName' in group else None
+                if dn:
+                    dnmap[gid] = dn if isinstance(dn, str) else dn[0] if isinstance(dn, list) else str(dn)
+            except (KeyError, ValueError, IndexError, AttributeError):
+                continue
         self.groups_dnmap = dnmap
         return dnmap
 
     #Create a dictionary where a groups CN returns the full object
     def createGroupsDictByCn(self):
-        gdict = {grp.cn.values[0]:grp for grp in self.groups}
+        gdict = {}
+        for grp in self.groups:
+            try:
+                cn = grp['cn'].value if 'cn' in grp else None
+                if cn:
+                    cn = cn if isinstance(cn, str) else cn[0] if isinstance(cn, list) else str(cn)
+                    gdict[cn] = grp
+            except (KeyError, AttributeError):
+                continue
         self.groups_dict = gdict
         return gdict
 
@@ -373,15 +466,18 @@ class domainDumper():
             self.mapGroupsIdsToDns()
         for user in items:
             try:
-                ugroups = [self.getGroupCnFromDn(group) for group in user.memberOf.values]
+                member_of = user['memberOf'].values if 'memberOf' in user else []
+                ugroups = [self.getGroupCnFromDn(group) for group in member_of]
             #If the user is only in the default group, its memberOf property wont exist
-            except (LDAPAttributeError, LDAPCursorError):
+            except (LDAPAttributeError, LDAPCursorError, KeyError):
                 ugroups = []
             #Add the user default group
             try:
-                ugroups.append(self.getGroupCnFromDn(self.groups_dnmap[user.primaryGroupId.value]))
+                primary_group_id = user['primaryGroupId'].value if 'primaryGroupId' in user else None
+                if primary_group_id and primary_group_id in self.groups_dnmap:
+                    ugroups.append(self.getGroupCnFromDn(self.groups_dnmap[primary_group_id]))
             # Sometimes we can't query this group or it doesn't exist
-            except KeyError:
+            except (KeyError, AttributeError):
                 pass
             for group in ugroups:
                 try:
@@ -393,14 +489,16 @@ class domainDumper():
         #Append any groups that are members of groups
         for group in self.groups:
             try:
-                for parentgroup in group.memberOf.values:
+                member_of = group['memberOf'].values if 'memberOf' in group else []
+                for parentgroup in member_of:
                     try:
-                        groupsdict[self.getGroupCnFromDn(parentgroup)].append(group)
+                        parent_cn = self.getGroupCnFromDn(parentgroup)
+                        groupsdict[parent_cn].append(group)
                     except KeyError:
                         #Group is not yet in dict
-                        groupsdict[self.getGroupCnFromDn(parentgroup)] = [group]
+                        groupsdict[parent_cn] = [group]
             #Without subgroups this attribute does not exist
-            except (LDAPAttributeError, LDAPCursorError):
+            except (LDAPAttributeError, LDAPCursorError, KeyError):
                 pass
 
         return groupsdict
@@ -454,23 +552,46 @@ class reportWriter():
         if isinstance(length, timedelta):
             return length.total_seconds() / 86400
         else:
-            return abs(length) * .0000001 / 86400
+            # Convert string to number if needed
+            try:
+                if isinstance(length, str):
+                    length = int(length)
+                return abs(length) * .0000001 / 86400
+            except (ValueError, TypeError):
+                return 0.0
 
     def nsToMinutes(self, length):
         # ldap3 >= 2.6 returns timedelta
         if isinstance(length, timedelta):
             return length.total_seconds() / 60
         else:
-            return abs(length) * .0000001 / 60
+            # Convert string to number if needed
+            try:
+                if isinstance(length, str):
+                    length = int(length)
+                return abs(length) * .0000001 / 60
+            except (ValueError, TypeError):
+                return 0.0
 
     #Parse bitwise flags into a list
     def parseFlags(self, attr, flags_def):
         outflags = []
-        if attr is None or attr.value is None:
+        if attr is None:
             return outflags
-        for flag, val in flags_def.items():
-            if int(attr.value) & val:
-                outflags.append(flag)
+        # Handle both ADWSAttribute and legacy attribute objects
+        if hasattr(attr, 'value'):
+            attr_value = attr.value
+        else:
+            attr_value = attr
+        if attr_value is None:
+            return outflags
+        try:
+            flag_int = int(attr_value)
+            for flag, val in flags_def.items():
+                if flag_int & val:
+                    outflags.append(flag)
+        except (ValueError, TypeError):
+            pass
         return outflags
 
     #Parse bitwise trust direction - only one flag applies here, 0x03 overlaps
@@ -478,9 +599,20 @@ class reportWriter():
         outflags = []
         if attr is None:
             return outflags
-        for flag, val in flags_def.items():
-            if int(attr.value) == val:
-                outflags.append(flag)
+        # Handle both ADWSAttribute and legacy attribute objects
+        if hasattr(attr, 'value'):
+            attr_value = attr.value
+        else:
+            attr_value = attr
+        if attr_value is None:
+            return outflags
+        try:
+            flag_int = int(attr_value)
+            for flag, val in flags_def.items():
+                if flag_int == val:
+                    outflags.append(flag)
+        except (ValueError, TypeError):
+            pass
         return outflags
 
     #Generate a HTML table from a list of entries, with the specified attributes as column
@@ -503,7 +635,14 @@ class reportWriter():
         of.append('</tr>\n')
         for li in listable:
             #Whether we should format group objects separately
-            if specialGroupsFormat and 'group' in li['objectClass'].values:
+            object_class = li.get('objectClass')
+            if object_class:
+                oc_values = object_class.values if hasattr(object_class, 'values') else [object_class] if not isinstance(object_class, list) else object_class
+                oc_lower = [str(oc).lower() for oc in oc_values]
+            else:
+                oc_lower = []
+            
+            if specialGroupsFormat and 'group' in oc_lower:
                 #Give it an extra class and pass it to the function below to make sure the CN is a link
                 liIsGroup = True
                 of.append('<tr class="group">')
@@ -513,7 +652,7 @@ class reportWriter():
             for att in attributes:
                 try:
                     of.append('<td>%s</td>' % self.formatAttribute(li[att], liIsGroup))
-                except (LDAPKeyError, LDAPCursorError):
+                except (LDAPKeyError, LDAPCursorError, KeyError):
                     of.append('<td>&nbsp;</td>')
             of.append('</tr>\n')
         of.append('</tbody>\n')
@@ -575,6 +714,64 @@ class reportWriter():
         with codecs.open(outfile, 'w', 'utf8') as of:
             of.write(body)
 
+    #Parse LDAP timestamp formats to datetime
+    def parseLdapTimestamp(self, value):
+        """Parse LDAP timestamp formats (generalized time or Windows FILETIME) to datetime"""
+        if value is None:
+            return None
+        
+        # Handle special "never" values
+        if value == 0 or value == "0" or value == -9223372036854775808:
+            return None  # Return None to indicate "never" - will be handled by caller
+        
+        # Try LDAP generalized time format: YYYYMMDDHHmmss.fZ
+        if isinstance(value, str):
+            # Remove .0Z or similar suffix
+            value_clean = value.rstrip('Z').split('.')[0]
+            if len(value_clean) == 14 and value_clean.isdigit():
+                try:
+                    year = int(value_clean[0:4])
+                    month = int(value_clean[4:6])
+                    day = int(value_clean[6:8])
+                    hour = int(value_clean[8:10])
+                    minute = int(value_clean[10:12])
+                    second = int(value_clean[12:14])
+                    return datetime(year, month, day, hour, minute, second)
+                except (ValueError, IndexError):
+                    pass
+        
+        # Try Windows FILETIME (100-nanosecond intervals since Jan 1, 1601)
+        if isinstance(value, (int, str)):
+            try:
+                if isinstance(value, str):
+                    # Check if it's a large number string
+                    if not value.isdigit():
+                        return None
+                    filetime = int(value)
+                else:
+                    filetime = value
+                
+                # FILETIME epoch: January 1, 1601
+                # Convert to Unix timestamp
+                if filetime > 0 and filetime < 2**63:  # Reasonable range check
+                    # FILETIME is in 100-nanosecond intervals
+                    # Convert to seconds since Jan 1, 1601
+                    unix_epoch = datetime(1970, 1, 1)
+                    filetime_epoch = datetime(1601, 1, 1)
+                    epoch_delta = (unix_epoch - filetime_epoch).total_seconds()
+                    
+                    # Convert FILETIME to seconds
+                    seconds_since_1601 = filetime / 10000000.0
+                    # Convert to Unix timestamp
+                    unix_timestamp = seconds_since_1601 - epoch_delta
+                    
+                    if unix_timestamp > 0:
+                        return datetime.fromtimestamp(unix_timestamp)
+            except (ValueError, OverflowError, OSError):
+                pass
+        
+        return None
+
     #Format a value for HTML
     def formatString(self, value):
         if type(value) is datetime:
@@ -583,9 +780,22 @@ class reportWriter():
             except ValueError:
                 #Invalid date
                 return '0'
+        
+        # Check for special "never" values first
+        if value == 0 or value == "0" or value == -9223372036854775808:
+            return "Never"
+        
+        # Try to parse as LDAP timestamp
+        parsed_date = self.parseLdapTimestamp(value)
+        if parsed_date:
+            try:
+                return parsed_date.strftime('%x %X')
+            except ValueError:
+                pass
+        
         # Make sure it's a unicode string
         if type(value) is bytes:
-            return value.encode('utf8')
+            return value.decode('utf8', errors='replace')
         if type(value) is str:
             return value#.encode('utf8')
         if type(value) is int:
@@ -597,23 +807,35 @@ class reportWriter():
 
     #Format an attribute to a human readable format
     def formatAttribute(self, att, formatCnAsGroup=False):
-        aname = att.key.lower()
+        # Handle both ADWSAttribute and legacy attribute objects
+        if hasattr(att, 'key'):
+            aname = att.key.lower()
+            att_value = att.value if hasattr(att, 'value') else None
+            att_values = att.values if hasattr(att, 'values') else [att_value] if att_value else []
+            att_raw_values = att.raw_values if hasattr(att, 'raw_values') else att_values
+        else:
+            # Fallback for other attribute types
+            aname = str(att).lower()
+            att_value = att
+            att_values = [att]
+            att_raw_values = [att]
+        
         #User flags
         if aname == 'useraccountcontrol':
             return ', '.join(self.parseFlags(att, uac_flags))
         #List of groups
-        if aname == 'member' or aname == 'memberof' and type(att.values) is list:
-            return self.formatGroupsHtml(att.values)
-        if aname == 'serviceprincipalname' and type(att.values) is list:
-            return self.formatSPNsHtml(att.values)
+        if aname == 'member' or (aname == 'memberof' and isinstance(att_values, list)):
+            return self.formatGroupsHtml(att_values)
+        if aname == 'serviceprincipalname' and isinstance(att_values, list):
+            return self.formatSPNsHtml(att_values)
         #Primary group
         if aname == 'primarygroupid':
             try:
-                return self.formatGroupsHtml([self.dd.groups_dnmap[att.value]])
-            except KeyError:
+                return self.formatGroupsHtml([self.dd.groups_dnmap[att_value]])
+            except (KeyError, AttributeError):
                 return 'NOT FOUND!'
-        if aname == 'description' and type(att.values) is list:
-             return " ".join(att.values)
+        if aname == 'description' and isinstance(att_values, list):
+             return " ".join(att_values)
         #Pwd flags
         if aname == 'pwdproperties':
             return ', '.join(self.parseFlags(att, pwd_flags))
@@ -621,25 +843,38 @@ class reportWriter():
         if aname == 'trustattributes':
             return ', '.join(self.parseFlags(att, trust_flags))
         if aname == 'trustdirection':
-            if  att.value == 0:
+            if att_value == 0:
                 return 'DISABLED'
             else:
                 return ', '.join(self.parseSingleFlag(att, trust_directions))
         if aname == 'trusttype':
             return ', '.join(self.parseSingleFlag(att, trust_type))
         if aname == 'securityidentifier':
-            return format_sid(att.raw_values[0])
+            try:
+                sid_bytes = att_raw_values[0]
+                if isinstance(sid_bytes, bytes):
+                    return LDAP_SID(sid_bytes).formatCanonical()
+                else:
+                    return str(sid_bytes)
+            except (IndexError, AttributeError):
+                return str(att_value)
         if aname == 'minpwdage' or  aname == 'maxpwdage':
-            return '%.2f days' % self.nsToDays(att.value)
+            return '%.2f days' % self.nsToDays(att_value)
         if aname == 'lockoutobservationwindow' or  aname == 'lockoutduration':
-            return '%.1f minutes' % self.nsToMinutes(att.value)
+            return '%.1f minutes' % self.nsToMinutes(att_value)
         if aname == 'objectsid':
-            return '<abbr title="%s">%s</abbr>' % (att.value, att.value.split('-')[-1])
+            sid_str = att_value
+            if isinstance(sid_str, bytes):
+                from impacket.ldap.ldaptypes import LDAP_SID
+                sid_str = LDAP_SID(sid_str).formatCanonical()
+            elif not isinstance(sid_str, str):
+                sid_str = str(sid_str)
+            return '<abbr title="%s">%s</abbr>' % (sid_str, sid_str.split('-')[-1] if '-' in sid_str else sid_str)
         #Special case where the attribute is a CN and it should be made clear its a group
         if aname == 'cn' and formatCnAsGroup:
-            return self.formatCnWithGroupLink(att.value)
+            return self.formatCnWithGroupLink(att_value)
         #Other
-        return self.htmlescape(self.formatString(att.value))
+        return self.htmlescape(self.formatString(att_value))
 
 
     def formatCnWithGroupLink(self, cn):
@@ -696,42 +931,61 @@ class reportWriter():
 
     #Format attribute for grepping
     def formatGrepAttribute(self, att):
-        aname = att.key.lower()
+        # Handle both ADWSAttribute and legacy attribute objects
+        if hasattr(att, 'key'):
+            aname = att.key.lower()
+            att_value = att.value if hasattr(att, 'value') else None
+            att_values = att.values if hasattr(att, 'values') else [att_value] if att_value else []
+            att_raw_values = att.raw_values if hasattr(att, 'raw_values') else att_values
+        else:
+            # Fallback for other attribute types
+            aname = str(att).lower()
+            att_value = att
+            att_values = [att]
+            att_raw_values = [att]
+        
         #User flags
         if aname == 'useraccountcontrol':
             return ', '.join(self.parseFlags(att, uac_flags))
         #List of groups
-        if aname == 'member' or aname == 'memberof' and type(att.values) is list:
-            return self.formatGroupsGrep(att.values)
-        if aname == 'serviceprincipalname' and type(att.values) is list:
-            return self.formatSPNsGrep(att.values)
+        if aname == 'member' or (aname == 'memberof' and isinstance(att_values, list)):
+            return self.formatGroupsGrep(att_values)
+        if aname == 'serviceprincipalname' and isinstance(att_values, list):
+            return self.formatSPNsGrep(att_values)
         if aname == 'primarygroupid':
             try:
-                return self.formatGroupsGrep([self.dd.groups_dnmap[att.value]])
-            except KeyError:
+                return self.formatGroupsGrep([self.dd.groups_dnmap[att_value]])
+            except (KeyError, AttributeError):
                 return 'NOT FOUND!'
-        if aname == 'description' and type(att.values) is list:
-            return " ".join(att.values)
+        if aname == 'description' and isinstance(att_values, list):
+            return " ".join(att_values)
         #Domain trust flags
         if aname == 'trustattributes':
             return ', '.join(self.parseFlags(att, trust_flags))
         if aname == 'trustdirection':
-            if att.value == 0:
+            if att_value == 0:
                 return 'DISABLED'
             else:
                 return ', '.join(self.parseSingleFlag(att, trust_directions))
         if aname == 'trusttype':
             return ', '.join(self.parseSingleFlag(att, trust_type))
         if aname == 'securityidentifier':
-            return format_sid(att.raw_values[0])
+            try:
+                sid_bytes = att_raw_values[0]
+                if isinstance(sid_bytes, bytes):
+                    return LDAP_SID(sid_bytes).formatCanonical()
+                else:
+                    return str(sid_bytes)
+            except (IndexError, AttributeError):
+                return str(att_value)
         #Pwd flags
         if aname == 'pwdproperties':
             return ', '.join(self.parseFlags(att, pwd_flags))
         if aname == 'minpwdage' or  aname == 'maxpwdage':
-            return '%.2f days' % self.nsToDays(att.value)
+            return '%.2f days' % self.nsToDays(att_value)
         if aname == 'lockoutobservationwindow' or  aname == 'lockoutduration':
-            return '%.1f minutes' % self.nsToMinutes(att.value)
-        return self.formatString(att.value)
+            return '%.1f minutes' % self.nsToMinutes(att_value)
+        return self.formatString(att_value)
 
     #Generate grep/awk/cut-able output
     def generateGrepList(self, entrylist, attributes):
@@ -742,7 +996,7 @@ class reportWriter():
             for attr in attributes:
                 try:
                     eo.append(self.formatGrepAttribute(entry[attr]) or '')
-                except (LDAPKeyError, LDAPCursorError):
+                except (LDAPKeyError, LDAPCursorError, KeyError):
                     eo.append('')
             out.append(self.config.grepsplitchar.join(eo))
         return '\n'.join(out)
@@ -866,16 +1120,16 @@ def log_success(text):
     print('[+] %s' % text)
 
 def main():
-    parser = argparse.ArgumentParser(description='Domain information dumper via LDAP. Dumps users/computers/groups and OS/membership information to HTML/JSON/greppable output.')
+    parser = argparse.ArgumentParser(description='Domain information dumper via ADWS. Dumps users/computers/groups and OS/membership information to HTML/JSON/greppable output.')
     parser._optionals.title = "Main options"
     parser._positionals.title = "Required options"
 
     #Main parameters
     #maingroup = parser.add_argument_group("Main options")
-    parser.add_argument("host", type=str, metavar='HOSTNAME', help="Hostname/ip or ldap://host:port connection string to connect to (use ldaps:// to use SSL)")
-    parser.add_argument("-u", "--user", type=str, metavar='USERNAME', help="DOMAIN\\username for authentication, leave empty for anonymous authentication")
+    parser.add_argument("host", type=str, metavar='HOSTNAME', help="Hostname/ip of domain controller to connect to via ADWS (port 9389)")
+    parser.add_argument("-u", "--user", type=str, metavar='USERNAME', help="DOMAIN\\username or user@domain.com for authentication")
     parser.add_argument("-p", "--password", type=str, metavar='PASSWORD', help="Password or LM:NTLM hash, will prompt if not specified")
-    parser.add_argument("-at", "--authtype", type=str, choices=['NTLM', 'SIMPLE'], default='NTLM', help="Authentication type (NTLM or SIMPLE, default: NTLM)")
+    parser.add_argument("-at", "--authtype", type=str, choices=['NTLM'], default='NTLM', help="Authentication type (NTLM only for ADWS, default: NTLM)")
 
     #Output parameters
     outputgroup = parser.add_argument_group("Output options")
@@ -922,30 +1176,54 @@ def main():
     #Do we really need grouped json files?
     cnf.groupedjson = args.grouped_json
 
-    #Prompt for password if not set
-    authentication = None
+    #Parse host and domain
+    host = args.host
+    # Remove ldap:// or ldaps:// prefix if present (ADWS uses net.tcp://)
+    if host.startswith('ldap://'):
+        host = host[7:]
+    elif host.startswith('ldaps://'):
+        host = host[8:]
+    # Remove port if specified (ADWS uses port 9389)
+    if ':' in host:
+        host = host.split(':')[0]
+    
+    # Extract domain from username or use hostname
+    domain = None
+    username = args.user
     if args.user is not None:
-        if args.authtype == 'SIMPLE':
-            authentication = 'SIMPLE'
+        if '\\' in args.user:
+            domain, username = args.user.split('\\', 1)
+        elif '@' in args.user:
+            username, domain = args.user.rsplit('@', 1)
         else:
-            authentication = NTLM
-        if not '\\' in args.user:
-            log_warn('Username must include a domain, use: DOMAIN\\username')
-            sys.exit(1)
-        if args.password is None:
-            args.password = getpass.getpass()
+            # Try to extract domain from hostname
+            if '.' in host:
+                domain = '.'.join(host.split('.')[1:])
+            else:
+                log_warn('Username must include a domain, use: DOMAIN\\username or user@domain.com')
+                sys.exit(1)
     else:
-        log_info('Connecting as anonymous user, dumping will probably fail. Consider specifying a username/password to login with')
-    # define the server and the connection
-    s = Server(args.host, get_info=ALL)
-    log_info('Connecting to host...')
+        # Try to extract domain from hostname
+        if '.' in host:
+            domain = '.'.join(host.split('.')[1:])
+        else:
+            log_warn('Cannot determine domain. Please specify username with domain (DOMAIN\\username or user@domain.com)')
+            sys.exit(1)
+    
+    if args.password is None and args.user is not None:
+        args.password = getpass.getpass()
+    
+    # define the server and the connection using ADWS
+    s = ADWSServer(host, domain)
+    log_info('Connecting to ADWS host...')
 
-    c = Connection(s, user=args.user, password=args.password, authentication=authentication)
-    log_info('Binding to host')
+    c = ADWSConnection(s, user=args.user, password=args.password)
+    log_info('Binding to ADWS host')
     # perform the Bind operation
     if not c.bind():
         log_warn('Could not bind with specified credentials')
-        log_warn(c.result)
+        if hasattr(c, 'result'):
+            log_warn(c.result)
         sys.exit(1)
     log_success('Bind OK')
     log_info('Starting domain dump')
