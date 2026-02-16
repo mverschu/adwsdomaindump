@@ -1,5 +1,5 @@
 # ADWSDomainDump
-Active Directory information dumper via ADWS (Active Directory Web Services)
+Active Directory information dumper via ADWS (Active Directory Web Services).
 
 ## Introduction
 In an Active Directory domain, a lot of interesting information can be retrieved via ADWS by any authenticated user (or machine).
@@ -24,6 +24,14 @@ adwsdomaindump -u 'thewoods.local\mathijs.verschuuren' -p 'password' -n 10.10.10
 [+] Domain dump finished
 ```
 
+## Evasion
+Currently tested against:
+| EDR | Bypassed |
+|-----|----------|
+| Microsoft Defender for Endpoint | Yes |
+| CrowdStrike Falcon | Yes |
+
+
 ## Credits
 
 This project is a fork/adaptation of [ldapdomaindump](https://github.com/dirkjanm/ldapdomaindump) by Dirk-jan Mollema, converted to use ADWS instead of LDAP.
@@ -32,3 +40,4 @@ Original work: Copyright (c) 2017 Dirk-jan Mollema
 
 ## License
 MIT
+
