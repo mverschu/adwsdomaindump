@@ -13,11 +13,14 @@ pipx install .
 ```sh
 adwsdomaindump -u 'thewoods.local\mathijs.verschuuren' -p 'password' -n 10.10.10.1 dc01.thewoods.local
 [*] Connecting to ADWS host...
+[+] ADWS port 9389 is reachable
 [*] Binding to ADWS host
 [+] Bind OK
 [*] Starting domain dump
 [+] Domain dump finished
 ```
+
+Use `--force` to skip the ADWS port connectivity check.
 
 ## Evasion
 Currently tested against:
