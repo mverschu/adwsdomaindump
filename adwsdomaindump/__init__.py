@@ -22,7 +22,7 @@
 # SOFTWARE.
 #
 ####################
-import sys, os, re, codecs, json, argparse, getpass, base64
+import sys, os, re, codecs, json, argparse, getpass, base64, socket
 # import class and constants
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
@@ -1119,6 +1119,20 @@ def log_info(text):
 def log_success(text):
     print('[+] %s' % text)
 
+def test_adws_port(host, port=9389, timeout=5):
+    """
+    Test if ADWS port is reachable
+    Returns True if connection succeeds, False otherwise
+    """
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
 def main():
     parser = argparse.ArgumentParser(description='Domain information dumper via ADWS. Dumps users/computers/groups and OS/membership information to HTML/JSON/greppable output.')
     parser._optionals.title = "Main options"
@@ -1145,6 +1159,7 @@ def main():
     miscgroup.add_argument("-r", "--resolve", action='store_true', help="Resolve computer hostnames (might take a while and cause high traffic on large networks)")
     miscgroup.add_argument("-n", "--dns-server", help="Use custom DNS resolver instead of system DNS (try a domain controller IP)")
     miscgroup.add_argument("-m", "--minimal", action='store_true', default=False, help="Only query minimal set of attributes to limit memmory usage")
+    miscgroup.add_argument("--force", action='store_true', help="Skip ADWS port connectivity check")
 
     args = parser.parse_args()
     #Create default config
@@ -1216,6 +1231,15 @@ def main():
     # define the server and the connection using ADWS
     s = ADWSServer(host, domain)
     log_info('Connecting to ADWS host...')
+    
+    # Test ADWS port connectivity (unless --force is used)
+    if not args.force:
+        if test_adws_port(host, 9389):
+            log_success('ADWS port 9389 is reachable')
+        else:
+            log_warn('ADWS port 9389 is not reachable')
+    else:
+        log_info('Skipping port check (--force specified)')
 
     c = ADWSConnection(s, user=args.user, password=args.password)
     log_info('Binding to ADWS host')
