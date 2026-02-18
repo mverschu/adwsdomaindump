@@ -1,5 +1,5 @@
 # ADWSDomainDump
-Active Directory information dumper via ADWS (Active Directory Web Services).
+Active Directory information dumper via ADWS (Active Directory Web Services).</br>
 <img width="350" height="350" alt="image" src="https://github.com/user-attachments/assets/6d624141-005c-49a1-88ee-e6c431ff0b57" />
 
 ## Install
@@ -39,6 +39,7 @@ Original work: Copyright (c) 2017 Dirk-jan Mollema
 
 ## License
 MIT
+
 
 
 
