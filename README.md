@@ -6,6 +6,8 @@ Active Directory information dumper via ADWS (Active Directory Web Services).</b
 Recommended install:
 
 ```sh
+pipx install git+https://github.com/mverschu/adwsdomaindump
+# or
 pipx install .
 ```
 
@@ -39,6 +41,7 @@ Original work: Copyright (c) 2017 Dirk-jan Mollema
 
 ## License
 MIT
+
 
 
 
