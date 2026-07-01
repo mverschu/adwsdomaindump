@@ -21,6 +21,46 @@ except ImportError as e:
 
 logger = logging.getLogger(__name__)
 
+CORE_OBJECT_ATTRIBUTES = [
+    'cn', 'name', 'sAMAccountName', 'distinguishedName', 'objectClass',
+    'objectSid', 'objectGUID', 'memberOf', 'primaryGroupId', 'userAccountControl',
+    'whenCreated', 'whenChanged', 'lastLogon', 'pwdLastSet', 'description',
+    'servicePrincipalName', 'operatingSystem', 'operatingSystemServicePack',
+    'operatingSystemVersion', 'dNSHostName', 'member',
+]
+
+DOMAIN_POLICY_ATTRIBUTES = CORE_OBJECT_ATTRIBUTES + [
+    'lockOutObservationWindow', 'lockoutDuration', 'lockoutThreshold',
+    'maxPwdAge', 'minPwdAge', 'minPwdLength', 'pwdHistoryLength', 'pwdProperties',
+    'msDS-Behavior-Version', 'gPLink',
+]
+
+TRUST_OBJECT_ATTRIBUTES = [
+    'cn', 'name', 'distinguishedName', 'objectClass', 'objectSid', 'objectGUID',
+    'flatName', 'securityIdentifier', 'trustAttributes', 'trustDirection', 'trustType',
+    'whenCreated', 'whenChanged',
+]
+
+# Used when callers request ['*'] on users/groups/computers
+DEFAULT_ATTRIBUTES = list(CORE_OBJECT_ATTRIBUTES)
+
+# ADWS cannot select these attributes (even on domain objects)
+ADWS_UNSUPPORTED_ATTRIBUTES = frozenset({
+    'msDS-MachineAccountQuota',
+    'ms-DS-MachineAccountQuota',
+})
+
+# Common ldapdomaindump-style names that ADWS rejects
+ADWS_ATTRIBUTE_ALIASES = {
+    'ms-DS-Behavior-Version': 'msDS-Behavior-Version',
+}
+
+def normalize_adws_attributes(attributes):
+    if not attributes:
+        return attributes
+    normalized = [ADWS_ATTRIBUTE_ALIASES.get(attr, attr) for attr in attributes]
+    return [attr for attr in normalized if attr not in ADWS_UNSUPPORTED_ATTRIBUTES]
+
 
 class ADWSEntry:
     """
@@ -50,11 +90,15 @@ class ADWSEntry:
                     if is_b64_by_type or attr_name_lower in KNOWN_BINARY_ADWS_ATTRIBUTES:
                         if isinstance(val_elem.text, str):
                             try:
-                                values.append(base64.b64decode(val_elem.text))
+                                raw = base64.b64decode(val_elem.text)
                             except Exception:
-                                values.append(val_elem.text)
+                                raw = val_elem.text
                         else:
-                            values.append(val_elem.text)
+                            raw = val_elem.text
+                        if attr_name_lower == 'objectguid' and isinstance(raw, (bytes, bytearray)) and len(raw) == 16:
+                            values.append(str(UUID(bytes_le=bytes(raw))).upper())
+                        else:
+                            values.append(raw)
                     else:
                         values.append(val_elem.text)
                 
@@ -204,6 +248,15 @@ class ADWSConnection:
             self._root_dn = rootdse.get('defaultNamingContext') or rootdse.get('rootDomainNamingContext')
             if self._root_dn:
                 self.server.info.other['defaultNamingContext'] = [self._root_dn]
+            domain_dn = f"DC={',DC='.join(self.server.domain.split('.'))}"
+            for key, fallback in (
+                ('configurationNamingContext', f"CN=Configuration,{domain_dn}"),
+                ('schemaNamingContext', None),
+                ('rootDomainNamingContext', domain_dn),
+            ):
+                val = rootdse.get(key) or fallback
+                if val:
+                    self.server.info.other[key] = [val]
             
             self._bound = True
             return True
@@ -224,19 +277,9 @@ class ADWSConnection:
         
         # Use ALL_ATTRIBUTES equivalent
         if attributes == ['*'] or (isinstance(attributes, list) and len(attributes) == 1 and attributes[0] == '*'):
-            # For now, use a comprehensive list - in production you might want to query schema
-            attributes = [
-                'cn', 'name', 'sAMAccountName', 'distinguishedName', 'objectClass',
-                'objectSid', 'objectGUID', 'memberOf', 'primaryGroupId', 'userAccountControl',
-                'whenCreated', 'whenChanged', 'lastLogon', 'pwdLastSet', 'description',
-                'servicePrincipalName', 'operatingSystem', 'operatingSystemServicePack',
-                'operatingSystemVersion', 'dNSHostName', 'lockOutObservationWindow',
-                'lockoutDuration', 'lockoutThreshold', 'maxPwdAge', 'minPwdAge',
-                'minPwdLength', 'pwdHistoryLength', 'pwdProperties',
-                'ms-DS-MachineAccountQuota', 'flatName', 'securityIdentifier',
-                'trustAttributes', 'trustDirection', 'trustType', 'member'
-            ]
+            attributes = list(DEFAULT_ATTRIBUTES)
         
+        attributes = normalize_adws_attributes(attributes)
         try:
             # Use pull to get all results
             pull_result = self._adws_client.pull(

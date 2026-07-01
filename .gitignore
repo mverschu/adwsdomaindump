@@ -132,7 +132,36 @@ dmypy.json
 
 # Project-specific
 ldapdomaindump.egg-info
+adwsdomaindump.egg-info/
 domainlookup.py
+
+# Dump output (default / -o outdir) — do not commit collection artifacts
 domain_*.html
 domain_*.json
 domain_*.grep
+domain_*.md
+bloodhound_*.zip
+bloodhound*.zip
+users.json
+groups.json
+computers.json
+domains.json
+gpos.json
+ous.json
+containers.json
+certtemplates.json
+enterprisecas.json
+rootcas.json
+ntauthstores.json
+aiacas.json
+issuancepolicies.json
+
+# Impacket dacledit backups from lab seed scripts
+dacledit-*.bak
+
+# Local out directories from testing
+/out/
+out/
+
+# Lab seed scripts (local only, not published)
+scripts/
