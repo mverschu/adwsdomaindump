@@ -1,0 +1,57 @@
+name: Sync wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wiki/**'
+      - '.github/workflows/wiki-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare wiki payload
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/wiki-payload
+          cp wiki/*.md /tmp/wiki-payload/
+          rm -f /tmp/wiki-payload/README.md
+
+      - name: Publish to GitHub wiki
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.repository }}"
+          wiki_url="https://x-access-token:${GH_TOKEN}@github.com/${repo}.wiki.git"
+          workdir="/tmp/wiki-repo"
+
+          rm -rf "${workdir}"
+          if git clone "${wiki_url}" "${workdir}" 2>/dev/null; then
+            rsync -av --delete --exclude .git /tmp/wiki-payload/ "${workdir}/"
+            cd "${workdir}"
+            git add -A
+            if git diff --staged --quiet; then
+              echo "Wiki already up to date"
+              exit 0
+            fi
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "Sync wiki from ${GITHUB_SHA}"
+            git push
+          else
+            cd /tmp/wiki-payload
+            git init
+            git add -A
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "Initial wiki from ${GITHUB_SHA}"
+            git branch -M master
+            git remote add origin "${wiki_url}"
+            git push -f origin master
+          fi
