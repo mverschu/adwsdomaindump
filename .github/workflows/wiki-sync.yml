@@ -1,5 +1,12 @@
 name: Sync wiki
 
+# GitHub does not create the *.wiki.git repo until the first wiki page exists.
+# One-time setup: open https://github.com/mverschu/adwsdomaindump/wiki/_new ,
+# create a page titled "Home" (any placeholder text), then re-run this workflow.
+#
+# Optional: add repo secret WIKI_PUSH_TOKEN (PAT with repo / Contents read+write)
+# if GITHUB_TOKEN cannot push to the wiki repo.
+
 on:
   push:
     branches: [main]
@@ -26,12 +33,17 @@ jobs:
 
       - name: Publish to GitHub wiki
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WIKI_TOKEN: ${{ secrets.WIKI_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           repo="${{ github.repository }}"
-          wiki_url="https://x-access-token:${GH_TOKEN}@github.com/${repo}.wiki.git"
           workdir="/tmp/wiki-repo"
+
+          if [[ "${WIKI_TOKEN}" == ghp_* || "${WIKI_TOKEN}" == github_pat_* ]]; then
+            wiki_url="https://${{ github.actor }}:${WIKI_TOKEN}@github.com/${repo}.wiki.git"
+          else
+            wiki_url="https://x-access-token:${WIKI_TOKEN}@github.com/${repo}.wiki.git"
+          fi
 
           rm -rf "${workdir}"
           if git clone "${wiki_url}" "${workdir}" 2>/dev/null; then
@@ -45,13 +57,23 @@ jobs:
             git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               commit -m "Sync wiki from ${GITHUB_SHA}"
             git push
-          else
-            cd /tmp/wiki-payload
-            git init
-            git add -A
-            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-              commit -m "Initial wiki from ${GITHUB_SHA}"
-            git branch -M master
-            git remote add origin "${wiki_url}"
-            git push -f origin master
+            exit 0
           fi
+
+          echo "::warning::Wiki git repo not found. Create the first page at https://github.com/${repo}/wiki/_new then re-run this workflow."
+          cd /tmp/wiki-payload
+          git init
+          git add -A
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Initial wiki from ${GITHUB_SHA}"
+          for branch in master main; do
+            git branch -M "${branch}"
+            git remote remove origin 2>/dev/null || true
+            git remote add origin "${wiki_url}"
+            if git push -f origin "${branch}" 2>/dev/null; then
+              echo "Published wiki on branch ${branch}"
+              exit 0
+            fi
+          done
+          echo "::error::Could not push wiki. Create the first page manually, set WIKI_PUSH_TOKEN if needed, then re-run."
+          exit 1
