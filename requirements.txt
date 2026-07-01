@@ -1,3 +1,4 @@
 impacket>=0.11.0
 pycryptodomex
 dnspython
+certihound>=0.3.2

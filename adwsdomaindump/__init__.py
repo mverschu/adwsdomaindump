@@ -25,6 +25,7 @@
 import sys, os, re, codecs, json, argparse, getpass, base64, socket
 # import class and constants
 from datetime import datetime, timedelta
+from uuid import UUID
 from urllib.parse import quote_plus
 # ADWS imports instead of LDAP
 from .adws_wrapper import ADWSServer, ADWSConnection, ADWSEntry, ADWSAttribute
@@ -150,10 +151,10 @@ attr_translations = {'sAMAccountName':'SAM Name',
                      'minPwdLength':'Min password length',
                      'pwdHistoryLength':'Password history length',
                      'pwdProperties':'Password properties',
-                     'ms-DS-MachineAccountQuota':'Machine Account Quota',
+                     'msDS-MachineAccountQuota':'Machine Account Quota',
                      'flatName':'NETBIOS Domain name'}
 
-MINIMAL_COMPUTERATTRIBUTES = ['cn', 'sAMAccountName', 'dNSHostName', 'operatingSystem', 'operatingSystemServicePack', 'operatingSystemVersion', 'lastLogon', 'userAccountControl', 'whenCreated', 'objectSid', 'description', 'objectClass']
+MINIMAL_COMPUTERATTRIBUTES = ['cn', 'sAMAccountName', 'dNSHostName', 'operatingSystem', 'operatingSystemServicePack', 'operatingSystemVersion', 'lastLogon', 'lastLogonTimestamp', 'userAccountControl', 'whenCreated', 'objectSid', 'primaryGroupId', 'description', 'objectClass', 'msDS-AllowedToDelegateTo']
 MINIMAL_USERATTRIBUTES = ['cn', 'name', 'sAMAccountName', 'memberOf', 'primaryGroupId', 'whenCreated', 'whenChanged', 'lastLogon', 'userAccountControl', 'pwdLastSet', 'objectSid', 'description', 'servicePrincipalName', 'objectClass']
 MINIMAL_GROUPATTRIBUTES = ['cn', 'name', 'sAMAccountName', 'memberOf', 'description', 'whenCreated', 'whenChanged', 'objectSid', 'distinguishedName', 'objectClass']
 
@@ -169,6 +170,9 @@ class domainDumpConfig():
         self.computersfile = 'domain_computers' #Computer accounts
         self.policyfile = 'domain_policy' #General domain attributes
         self.trustsfile = 'domain_trusts' #Domain trusts attributes
+        self.gposfile = 'domain_gpos'
+        self.ousfile = 'domain_ous'
+        self.containersfile = 'domain_containers'
 
         #Combined files basenames
         self.users_by_group = 'domain_users_by_group' #Users sorted by group
@@ -178,6 +182,12 @@ class domainDumpConfig():
         self.outputhtml = True
         self.outputjson = True
         self.outputgrep = True
+        self.outputmarkdown = False
+        self.outputbloodhound = False
+        self.collect_all = False
+        self.collect_acl = False
+        self.collect_adcs = False
+        self.collect_adcs = False
 
         #Output json for groups
         self.groupedjson = False
@@ -208,6 +218,36 @@ class domainDumper():
         self.groups_dnmap = None #CN map for group IDs to CN
         self.groups_dict = None #Dictionary of groups by CN
         self.trusts = None #Domain trusts
+        self.gpos = None
+        self.ous = None
+        self.containers = None
+        self._child_object_cache = {}
+
+    def _query_attributes(self, minimal_attributes, kind='user'):
+        if self.config.minimal:
+            attrs = minimal_attributes
+        elif self.config.collect_all:
+            from .bloodhound_export import (
+                extended_user_attributes, extended_computer_attributes, extended_group_attributes,
+            )
+            if kind == 'computer':
+                attrs = extended_computer_attributes()
+            elif kind == 'group':
+                attrs = extended_group_attributes()
+            else:
+                attrs = extended_user_attributes()
+        else:
+            attrs = ['*']
+        if getattr(self.config, 'collect_acl', False):
+            from .bloodhound_export import with_acl_attributes
+            attrs = with_acl_attributes(attrs)
+        return attrs
+
+    def _paged_search(self, search_base, search_filter, attributes):
+        self.connection.extend.standard.paged_search(
+            search_base, search_filter, attributes=attributes, paged_size=500, generator=False
+        )
+        return self.connection.entries
 
     #Get the server root from the default naming context
     def getRoot(self):
@@ -266,70 +306,109 @@ class domainDumper():
 
     #Get all users
     def getAllUsers(self):
-        if self.config.minimal:
-            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user))', attributes=MINIMAL_USERATTRIBUTES, paged_size=500, generator=False)
-        else:
-            # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
-            all_attrs = ['*']  # ADWS wrapper will expand this
-            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user))', attributes=all_attrs, paged_size=500, generator=False)
-        return self.connection.entries
+        attrs = self._query_attributes(MINIMAL_USERATTRIBUTES, 'user')
+        return self._paged_search(self.root, '(&(objectCategory=person)(objectClass=user))', attrs)
 
     #Get all computers in the domain
     def getAllComputers(self):
-        if self.config.minimal:
-            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectClass=computer)(objectClass=user))', attributes=MINIMAL_COMPUTERATTRIBUTES, paged_size=500, generator=False)
-        else:
-            # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
-            all_attrs = ['*']  # ADWS wrapper will expand this
-            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectClass=computer)(objectClass=user))', attributes=all_attrs, paged_size=500, generator=False)
-        return self.connection.entries
+        attrs = self._query_attributes(MINIMAL_COMPUTERATTRIBUTES, 'computer')
+        return self._paged_search(self.root, '(&(objectClass=computer)(objectClass=user))', attrs)
 
     #Get all user SPNs
     def getAllUserSpns(self):
-        if self.config.minimal:
-            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*))', attributes=MINIMAL_USERATTRIBUTES, paged_size=500, generator=False)
-        else:
-            # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
-            all_attrs = ['*']  # ADWS wrapper will expand this
-            self.connection.extend.standard.paged_search('%s' % (self.root), '(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*))', attributes=all_attrs, paged_size=500, generator=False)
-        return self.connection.entries
+        attrs = self._query_attributes(MINIMAL_USERATTRIBUTES, 'user')
+        return self._paged_search(self.root, '(&(objectCategory=person)(objectClass=user)(servicePrincipalName=*))', attrs)
 
     #Get all defined groups
     def getAllGroups(self):
-        if self.config.minimal:
-            self.connection.extend.standard.paged_search(self.root, '(objectClass=group)', attributes=MINIMAL_GROUPATTRIBUTES, paged_size=500, generator=False)
-        else:
-            # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
-            all_attrs = ['*']  # ADWS wrapper will expand this
-            self.connection.extend.standard.paged_search(self.root, '(objectClass=group)', attributes=all_attrs, paged_size=500, generator=False)
-        return self.connection.entries
+        attrs = self._query_attributes(MINIMAL_GROUPATTRIBUTES, 'group')
+        return self._paged_search(self.root, '(objectClass=group)', attrs)
 
     #Get the domain policies (such as lockout policy)
     def getDomainPolicy(self):
-        # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
-        all_attrs = ['*']  # ADWS wrapper will expand this
-        self.connection.search(self.root, '(objectClass=domain)', attributes=all_attrs)
-        return self.connection.entries
+        if self.config.collect_all:
+            from .bloodhound_export import domain_policy_attributes
+            attrs = domain_policy_attributes()
+        else:
+            from .adws_wrapper import DOMAIN_POLICY_ATTRIBUTES
+            attrs = list(DOMAIN_POLICY_ATTRIBUTES)
+        if getattr(self.config, 'collect_acl', False):
+            from .bloodhound_export import with_acl_attributes
+            attrs = with_acl_attributes(attrs)
+        return self._paged_search(self.root, '(objectClass=domain)', attrs)
 
     #Get domain trusts
     def getTrusts(self):
-        # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
-        all_attrs = ['*']  # ADWS wrapper will expand this
-        self.connection.search(self.root, '(objectClass=trustedDomain)', attributes=all_attrs)
-        return self.connection.entries
+        from .adws_wrapper import TRUST_OBJECT_ATTRIBUTES
+        return self._paged_search(self.root, '(objectClass=trustedDomain)', list(TRUST_OBJECT_ATTRIBUTES))
 
     #Get all defined security groups
     #Syntax from:
     #https://ldapwiki.willeke.com/wiki/Active%20Directory%20Group%20Related%20Searches
     def getAllSecurityGroups(self):
-        # For ADWS, we'll use a comprehensive attribute list instead of ALL_ATTRIBUTES
-        all_attrs = ['*']  # ADWS wrapper will expand this
-        self.connection.search(self.root, '(groupType:1.2.840.113556.1.4.803:=2147483648)', attributes=all_attrs)
-        return self.connection.entries
+        attrs = self._query_attributes(['cn'])
+        return self._paged_search(self.root, '(groupType:1.2.840.113556.1.4.803:=2147483648)', attrs)
+
+    def getAllGPOs(self):
+        from .bloodhound_export import gpo_attributes, with_acl_attributes
+        attrs = gpo_attributes()
+        if getattr(self.config, 'collect_acl', False):
+            attrs = with_acl_attributes(attrs)
+        return self._paged_search(self.root, '(objectCategory=groupPolicyContainer)', attrs)
+
+    def getAllOUs(self):
+        from .bloodhound_export import ou_attributes, with_acl_attributes
+        attrs = ou_attributes()
+        if getattr(self.config, 'collect_acl', False):
+            attrs = with_acl_attributes(attrs)
+        return self._paged_search(self.root, '(objectCategory=organizationalUnit)', attrs)
+
+    def getAllContainers(self):
+        from .bloodhound_export import container_attributes, with_acl_attributes
+        attrs = container_attributes()
+        if getattr(self.config, 'collect_acl', False):
+            attrs = with_acl_attributes(attrs)
+        return self._paged_search(self.root, '(objectClass=container)', attrs)
+
+    def getChildObjects(self, dn):
+        dn_key = dn.upper()
+        if dn_key in self._child_object_cache:
+            return self._child_object_cache[dn_key]
+        child_filter = '(|(objectClass=container)(objectClass=organizationalUnit)(objectClass=group)(objectClass=computer)(&(objectCategory=person)(objectClass=user)))'
+        attrs = ['distinguishedName', 'objectClass', 'objectSid', 'objectGUID', 'sAMAccountName', 'name']
+        entries = self._paged_search(dn, child_filter, attrs)
+        from .bloodhound_export import is_direct_child
+        filtered = []
+        for entry in entries:
+            child_dn = None
+            try:
+                child_dn = entry['distinguishedName'].value
+            except (KeyError, AttributeError):
+                continue
+            if child_dn and is_direct_child(dn, child_dn):
+                filtered.append(entry)
+        self._child_object_cache[dn_key] = filtered
+        return filtered
 
     #Get the SID of the root object
     def getRootSid(self):
-        self.connection.search(self.root, '(objectClass=domain)', attributes=['objectSid'])
+        if self.policy:
+            try:
+                entry = self.policy[0]
+                sid_attr = entry['objectSid'] if 'objectSid' in entry else None
+                if sid_attr:
+                    sid = sid_attr.value
+                    if isinstance(sid, bytes):
+                        from impacket.ldap.ldaptypes import LDAP_SID
+                        return LDAP_SID(sid).formatCanonical()
+                    if isinstance(sid, str) and sid.startswith('S-'):
+                        return sid
+            except (LDAPAttributeError, LDAPCursorError, IndexError, KeyError, ValueError):
+                pass
+        self.connection.extend.standard.paged_search(
+            self.root, '(objectClass=domain)', attributes=['distinguishedName', 'objectSid'],
+            paged_size=500, generator=False
+        )
         try:
             entry = self.connection.entries[0]
             sid_attr = entry['objectSid'] if 'objectSid' in entry else None
@@ -512,14 +591,32 @@ class domainDumper():
             self.lookupComputerDnsNames()
         self.policy = self.getDomainPolicy()
         self.trusts = self.getTrusts()
+        if self.config.collect_all:
+            log_info('Collecting extended data (GPOs, OUs, containers, additional attributes)')
+            self.gpos = self.getAllGPOs()
+            self.ous = self.getAllOUs()
+            self.containers = self.getAllContainers()
+        if getattr(self.config, 'collect_acl', False):
+            log_info('ACL parsing enabled — nTSecurityDescriptor collected via ADWS for BloodHound export')
+        if getattr(self.config, 'collect_adcs', False):
+            log_info('AD CS collection enabled — PKI objects collected from Configuration partition via ADWS')
         rw = reportWriter(self.config)
         rw.generateUsersReport(self)
         rw.generateGroupsReport(self)
         rw.generateComputersReport(self)
         rw.generatePolicyReport(self)
         rw.generateTrustsReport(self)
+        if self.config.collect_all:
+            rw.generateGposReport(self)
+            rw.generateOusReport(self)
+            rw.generateContainersReport(self)
         rw.generateComputersByOsReport(self)
         rw.generateUsersByGroupReport(self)
+        if self.config.outputbloodhound:
+            from .bloodhound_export import BloodHoundExporter
+            log_info('Writing BloodHound JSON export')
+            BloodHoundExporter(self.config).export(self)
+            log_success('BloodHound export finished')
 
 class reportWriter():
     def __init__(self, config):
@@ -533,8 +630,29 @@ class reportWriter():
         #In grouped view, don't include the memberOf property to reduce output size
         self.userattributes_grouped = ['cn', 'name', 'sAMAccountName', 'whenCreated', 'whenChanged', 'lastLogon', 'userAccountControl', 'pwdLastSet', 'objectSid', 'description', 'servicePrincipalName']
         self.groupattributes = ['cn', 'sAMAccountName', 'memberOf', 'description', 'whenCreated', 'whenChanged', 'objectSid']
-        self.policyattributes = ['distinguishedName', 'lockOutObservationWindow', 'lockoutDuration', 'lockoutThreshold', 'maxPwdAge', 'minPwdAge', 'minPwdLength', 'pwdHistoryLength', 'pwdProperties', 'ms-DS-MachineAccountQuota']
+        self.policyattributes = ['distinguishedName', 'lockOutObservationWindow', 'lockoutDuration', 'lockoutThreshold', 'maxPwdAge', 'minPwdAge', 'minPwdLength', 'pwdHistoryLength', 'pwdProperties', 'msDS-Behavior-Version', 'gPLink']
         self.trustattributes = ['cn', 'flatName', 'securityIdentifier', 'trustAttributes', 'trustDirection', 'trustType']
+        self.gpoattributes = ['cn', 'displayName', 'distinguishedName', 'gPCFileSysPath', 'description', 'whenCreated', 'objectGUID']
+        self.ouattributes = ['cn', 'name', 'distinguishedName', 'gPLink', 'gPOptions', 'description', 'whenCreated', 'objectGUID']
+        self.containerattributes = ['cn', 'name', 'distinguishedName', 'description', 'whenCreated', 'objectGUID']
+
+    def _entry_attribute_names(self, entries):
+        names = []
+        seen = set()
+        for entry in entries or []:
+            attrs = entry._attributes if hasattr(entry, '_attributes') else {}
+            for key in attrs:
+                if key not in seen:
+                    seen.add(key)
+                    names.append(key)
+        return sorted(names)
+
+    def _report_attributes(self, entries, default_attrs):
+        if self.config.collect_all and entries:
+            dynamic = self._entry_attribute_names(entries)
+            if dynamic:
+                return dynamic
+        return default_attrs
 
     #Escape HTML special chars
     def htmlescape(self, html):
@@ -593,6 +711,38 @@ class reportWriter():
         except (ValueError, TypeError):
             pass
         return outflags
+
+    def formatSidValue(self, att_value, att_raw_values):
+        try:
+            sid_bytes = att_raw_values[0] if att_raw_values else att_value
+            if isinstance(sid_bytes, bytes):
+                return LDAP_SID(sid_bytes).formatCanonical()
+            if isinstance(sid_bytes, str):
+                if sid_bytes.startswith('S-'):
+                    return sid_bytes
+                try:
+                    return LDAP_SID(base64.b64decode(sid_bytes)).formatCanonical()
+                except Exception:
+                    return sid_bytes
+            return str(sid_bytes)
+        except (IndexError, AttributeError, ValueError, TypeError):
+            return self.formatString(att_value)
+
+    def formatObjectGuidValue(self, att_value, att_raw_values):
+        try:
+            guid_bytes = att_raw_values[0] if att_raw_values else att_value
+            if isinstance(guid_bytes, bytes):
+                return str(UUID(bytes_le=guid_bytes)).upper()
+            if isinstance(guid_bytes, str):
+                if guid_bytes.startswith('{'):
+                    return guid_bytes
+                try:
+                    return str(UUID(bytes_le=base64.b64decode(guid_bytes))).upper()
+                except Exception:
+                    return guid_bytes
+            return str(guid_bytes)
+        except (IndexError, AttributeError, ValueError, TypeError):
+            return self.formatString(att_value)
 
     #Parse bitwise trust direction - only one flag applies here, 0x03 overlaps
     def parseSingleFlag(self, attr, flags_def):
@@ -666,6 +816,42 @@ class reportWriter():
             if first:
                 first = False
 
+    #Escape characters that break markdown tables
+    def mdescape(self, value):
+        if value is None:
+            return ''
+        text = ''.join(c if c.isprintable() or c in ' \t' else '?' for c in str(value))
+        return text.replace('|', '\\|').replace('\n', ' ').replace('\r', '')
+
+    def _markdownColumnHeader(self, hdr):
+        try:
+            return attr_translations[hdr]
+        except KeyError:
+            return hdr
+
+    #Generate a markdown table from a list of entries
+    def generateMarkdownTable(self, listable, attributes, header='', header_level=2):
+        lines = []
+        if header:
+            lines.append('%s %s\n' % ('#' * min(header_level, 6), header))
+        headers = [self._markdownColumnHeader(h) for h in attributes]
+        lines.append('| ' + ' | '.join(self.mdescape(h) for h in headers) + ' |')
+        lines.append('| ' + ' | '.join('---' for _ in attributes) + ' |')
+        for li in listable:
+            row = []
+            for att in attributes:
+                try:
+                    row.append(self.mdescape(self.formatGrepAttribute(li[att])))
+                except (LDAPKeyError, LDAPCursorError, KeyError):
+                    row.append('')
+            lines.append('| ' + ' | '.join(row) + ' |')
+        return '\n'.join(lines) + '\n'
+
+    #Generate markdown sections for grouped reports
+    def generateGroupedMarkdownSections(self, groups, attributes):
+        for groupname, members in groups.items():
+            yield self.generateMarkdownTable(members, attributes, groupname, header_level=2)
+
     #Write generated HTML to file
     def writeHtmlFile(self, rel_outfile, body, genfunc=None, genargs=None, closeTable=True):
         if not os.path.exists(self.config.basepath):
@@ -713,6 +899,21 @@ class reportWriter():
         outfile = os.path.join(self.config.basepath, rel_outfile)
         with codecs.open(outfile, 'w', 'utf8') as of:
             of.write(body)
+
+    #Write generated Markdown to file
+    def writeMarkdownFile(self, rel_outfile, body, genfunc=None, genargs=None, title=None):
+        if not os.path.exists(self.config.basepath):
+            os.makedirs(self.config.basepath)
+        outfile = os.path.join(self.config.basepath, rel_outfile)
+        with codecs.open(outfile, 'w', 'utf8') as of:
+            if title:
+                of.write('# %s\n\n' % title)
+            if genfunc is None:
+                of.write(body)
+            else:
+                for part in genfunc(*genargs):
+                    of.write(part)
+                    of.write('\n')
 
     #Parse LDAP timestamp formats to datetime
     def parseLdapTimestamp(self, value):
@@ -795,7 +996,16 @@ class reportWriter():
         
         # Make sure it's a unicode string
         if type(value) is bytes:
-            return value.decode('utf8', errors='replace')
+            try:
+                return LDAP_SID(value).formatCanonical()
+            except Exception:
+                pass
+            if len(value) == 16:
+                try:
+                    return str(UUID(bytes_le=value)).upper()
+                except Exception:
+                    pass
+            return base64.b64encode(value).decode('ascii')
         if type(value) is str:
             return value#.encode('utf8')
         if type(value) is int:
@@ -850,25 +1060,15 @@ class reportWriter():
         if aname == 'trusttype':
             return ', '.join(self.parseSingleFlag(att, trust_type))
         if aname == 'securityidentifier':
-            try:
-                sid_bytes = att_raw_values[0]
-                if isinstance(sid_bytes, bytes):
-                    return LDAP_SID(sid_bytes).formatCanonical()
-                else:
-                    return str(sid_bytes)
-            except (IndexError, AttributeError):
-                return str(att_value)
+            return self.formatSidValue(att_value, att_raw_values)
+        if aname == 'objectguid':
+            return self.formatObjectGuidValue(att_value, att_raw_values)
         if aname == 'minpwdage' or  aname == 'maxpwdage':
             return '%.2f days' % self.nsToDays(att_value)
         if aname == 'lockoutobservationwindow' or  aname == 'lockoutduration':
             return '%.1f minutes' % self.nsToMinutes(att_value)
         if aname == 'objectsid':
-            sid_str = att_value
-            if isinstance(sid_str, bytes):
-                from impacket.ldap.ldaptypes import LDAP_SID
-                sid_str = LDAP_SID(sid_str).formatCanonical()
-            elif not isinstance(sid_str, str):
-                sid_str = str(sid_str)
+            sid_str = self.formatSidValue(att_value, att_raw_values)
             return '<abbr title="%s">%s</abbr>' % (sid_str, sid_str.split('-')[-1] if '-' in sid_str else sid_str)
         #Special case where the attribute is a CN and it should be made clear its a group
         if aname == 'cn' and formatCnAsGroup:
@@ -969,15 +1169,10 @@ class reportWriter():
                 return ', '.join(self.parseSingleFlag(att, trust_directions))
         if aname == 'trusttype':
             return ', '.join(self.parseSingleFlag(att, trust_type))
-        if aname == 'securityidentifier':
-            try:
-                sid_bytes = att_raw_values[0]
-                if isinstance(sid_bytes, bytes):
-                    return LDAP_SID(sid_bytes).formatCanonical()
-                else:
-                    return str(sid_bytes)
-            except (IndexError, AttributeError):
-                return str(att_value)
+        if aname == 'securityidentifier' or aname == 'objectsid':
+            return self.formatSidValue(att_value, att_raw_values)
+        if aname == 'objectguid':
+            return self.formatObjectGuidValue(att_value, att_raw_values)
         #Pwd flags
         if aname == 'pwdproperties':
             return ', '.join(self.parseFlags(att, pwd_flags))
@@ -1033,18 +1228,24 @@ class reportWriter():
     #Generate report of all computers grouped by OS family
     def generateComputersByOsReport(self, dd):
         grouped = dd.sortComputersByOS(dd.computers)
+        attrs = self._report_attributes(dd.computers, self.computerattributes)
         if self.config.outputhtml:
             #Use the generator approach to save memory
-            self.writeHtmlFile('%s.html' % self.config.computers_by_os, None, genfunc=self.generateGroupedHtmlTables, genargs=(grouped, self.computerattributes))
+            self.writeHtmlFile('%s.html' % self.config.computers_by_os, None, genfunc=self.generateGroupedHtmlTables, genargs=(grouped, attrs))
+        if self.config.outputmarkdown:
+            self.writeMarkdownFile('%s.md' % self.config.computers_by_os, None, genfunc=self.generateGroupedMarkdownSections, genargs=(grouped, attrs), title='Domain computers by OS')
         if self.config.outputjson and self.config.groupedjson:
             self.writeJsonFile('%s.json' % self.config.computers_by_os, None, genfunc=self.generateJsonGroupedList, genargs=(grouped, ))
 
     #Generate report of all groups and detailled user info
     def generateUsersByGroupReport(self, dd):
         grouped = dd.sortUsersByGroup(dd.users)
+        attrs = self._report_attributes(dd.users, self.userattributes_grouped)
         if self.config.outputhtml:
             #Use the generator approach to save memory
-            self.writeHtmlFile('%s.html' % self.config.users_by_group, None, genfunc=self.generateGroupedHtmlTables, genargs=(grouped, self.userattributes_grouped))
+            self.writeHtmlFile('%s.html' % self.config.users_by_group, None, genfunc=self.generateGroupedHtmlTables, genargs=(grouped, attrs))
+        if self.config.outputmarkdown:
+            self.writeMarkdownFile('%s.md' % self.config.users_by_group, None, genfunc=self.generateGroupedMarkdownSections, genargs=(grouped, attrs), title='Domain users by group')
         if self.config.outputjson and self.config.groupedjson:
             self.writeJsonFile('%s.json' % self.config.users_by_group, None, genfunc=self.generateJsonGroupedList, genargs=(grouped, ))
 
@@ -1053,63 +1254,128 @@ class reportWriter():
         #Copy dd to this object, to be able to reference it
         self.dd = dd
         dd.mapGroupsIdsToDns()
+        attrs = self._report_attributes(dd.users, self.userattributes)
         if self.config.outputhtml:
-            html = self.generateHtmlTable(dd.users, self.userattributes, 'Domain users')
+            html = self.generateHtmlTable(dd.users, attrs, 'Domain users')
             self.writeHtmlFile('%s.html' % self.config.usersfile, html)
         if self.config.outputgrep:
-            grepout = self.generateGrepList(dd.users, self.userattributes)
+            grepout = self.generateGrepList(dd.users, attrs)
             self.writeGrepFile('%s.grep' % self.config.usersfile, grepout)
+        if self.config.outputmarkdown:
+            md = self.generateMarkdownTable(dd.users, attrs, 'Domain users', header_level=1)
+            self.writeMarkdownFile('%s.md' % self.config.usersfile, md)
         if self.config.outputjson:
             jsonout = self.generateJsonList(dd.users)
             self.writeJsonFile('%s.json' % self.config.usersfile, jsonout)
 
     #Generate report with just a table of all computer accounts
     def generateComputersReport(self, dd):
+        attrs = self._report_attributes(dd.computers, self.computerattributes)
         if self.config.outputhtml:
-            html = self.generateHtmlTable(dd.computers, self.computerattributes, 'Domain computer accounts')
+            html = self.generateHtmlTable(dd.computers, attrs, 'Domain computer accounts')
             self.writeHtmlFile('%s.html' % self.config.computersfile, html)
         if self.config.outputgrep:
-            grepout = self.generateGrepList(dd.computers, self.computerattributes)
+            grepout = self.generateGrepList(dd.computers, attrs)
             self.writeGrepFile('%s.grep' % self.config.computersfile, grepout)
+        if self.config.outputmarkdown:
+            md = self.generateMarkdownTable(dd.computers, attrs, 'Domain computer accounts', header_level=1)
+            self.writeMarkdownFile('%s.md' % self.config.computersfile, md)
         if self.config.outputjson:
             jsonout = self.generateJsonList(dd.computers)
             self.writeJsonFile('%s.json' % self.config.computersfile, jsonout)
 
     #Generate report with just a table of all computer accounts
     def generateGroupsReport(self, dd):
+        attrs = self._report_attributes(dd.groups, self.groupattributes)
         if self.config.outputhtml:
-            html = self.generateHtmlTable(dd.groups, self.groupattributes, 'Domain groups')
+            html = self.generateHtmlTable(dd.groups, attrs, 'Domain groups')
             self.writeHtmlFile('%s.html' % self.config.groupsfile, html)
         if self.config.outputgrep:
-            grepout = self.generateGrepList(dd.groups, self.groupattributes)
+            grepout = self.generateGrepList(dd.groups, attrs)
             self.writeGrepFile('%s.grep' % self.config.groupsfile, grepout)
+        if self.config.outputmarkdown:
+            md = self.generateMarkdownTable(dd.groups, attrs, 'Domain groups', header_level=1)
+            self.writeMarkdownFile('%s.md' % self.config.groupsfile, md)
         if self.config.outputjson:
             jsonout = self.generateJsonList(dd.groups)
             self.writeJsonFile('%s.json' % self.config.groupsfile, jsonout)
 
     #Generate policy report
     def generatePolicyReport(self, dd):
+        attrs = self._report_attributes(dd.policy, self.policyattributes)
         if self.config.outputhtml:
-            html = self.generateHtmlTable(dd.policy, self.policyattributes, 'Domain policy')
+            html = self.generateHtmlTable(dd.policy, attrs, 'Domain policy')
             self.writeHtmlFile('%s.html' % self.config.policyfile, html)
         if self.config.outputgrep:
-            grepout = self.generateGrepList(dd.policy, self.policyattributes)
+            grepout = self.generateGrepList(dd.policy, attrs)
             self.writeGrepFile('%s.grep' % self.config.policyfile, grepout)
+        if self.config.outputmarkdown:
+            md = self.generateMarkdownTable(dd.policy, attrs, 'Domain policy', header_level=1)
+            self.writeMarkdownFile('%s.md' % self.config.policyfile, md)
         if self.config.outputjson:
             jsonout = self.generateJsonList(dd.policy)
             self.writeJsonFile('%s.json' % self.config.policyfile, jsonout)
 
     #Generate policy report
     def generateTrustsReport(self, dd):
+        attrs = self._report_attributes(dd.trusts, self.trustattributes)
         if self.config.outputhtml:
-            html = self.generateHtmlTable(dd.trusts, self.trustattributes, 'Domain trusts')
+            html = self.generateHtmlTable(dd.trusts, attrs, 'Domain trusts')
             self.writeHtmlFile('%s.html' % self.config.trustsfile, html)
         if self.config.outputgrep:
-            grepout = self.generateGrepList(dd.trusts, self.trustattributes)
+            grepout = self.generateGrepList(dd.trusts, attrs)
             self.writeGrepFile('%s.grep' % self.config.trustsfile, grepout)
+        if self.config.outputmarkdown:
+            md = self.generateMarkdownTable(dd.trusts, attrs, 'Domain trusts', header_level=1)
+            self.writeMarkdownFile('%s.md' % self.config.trustsfile, md)
         if self.config.outputjson:
             jsonout = self.generateJsonList(dd.trusts)
             self.writeJsonFile('%s.json' % self.config.trustsfile, jsonout)
+
+    def generateGposReport(self, dd):
+        attrs = self._report_attributes(dd.gpos, self.gpoattributes)
+        if self.config.outputhtml:
+            html = self.generateHtmlTable(dd.gpos, attrs, 'Group Policy Objects')
+            self.writeHtmlFile('%s.html' % self.config.gposfile, html)
+        if self.config.outputgrep:
+            grepout = self.generateGrepList(dd.gpos, attrs)
+            self.writeGrepFile('%s.grep' % self.config.gposfile, grepout)
+        if self.config.outputmarkdown:
+            md = self.generateMarkdownTable(dd.gpos, attrs, 'Group Policy Objects', header_level=1)
+            self.writeMarkdownFile('%s.md' % self.config.gposfile, md)
+        if self.config.outputjson:
+            jsonout = self.generateJsonList(dd.gpos)
+            self.writeJsonFile('%s.json' % self.config.gposfile, jsonout)
+
+    def generateOusReport(self, dd):
+        attrs = self._report_attributes(dd.ous, self.ouattributes)
+        if self.config.outputhtml:
+            html = self.generateHtmlTable(dd.ous, attrs, 'Organizational Units')
+            self.writeHtmlFile('%s.html' % self.config.ousfile, html)
+        if self.config.outputgrep:
+            grepout = self.generateGrepList(dd.ous, attrs)
+            self.writeGrepFile('%s.grep' % self.config.ousfile, grepout)
+        if self.config.outputmarkdown:
+            md = self.generateMarkdownTable(dd.ous, attrs, 'Organizational Units', header_level=1)
+            self.writeMarkdownFile('%s.md' % self.config.ousfile, md)
+        if self.config.outputjson:
+            jsonout = self.generateJsonList(dd.ous)
+            self.writeJsonFile('%s.json' % self.config.ousfile, jsonout)
+
+    def generateContainersReport(self, dd):
+        attrs = self._report_attributes(dd.containers, self.containerattributes)
+        if self.config.outputhtml:
+            html = self.generateHtmlTable(dd.containers, attrs, 'Containers')
+            self.writeHtmlFile('%s.html' % self.config.containersfile, html)
+        if self.config.outputgrep:
+            grepout = self.generateGrepList(dd.containers, attrs)
+            self.writeGrepFile('%s.grep' % self.config.containersfile, grepout)
+        if self.config.outputmarkdown:
+            md = self.generateMarkdownTable(dd.containers, attrs, 'Containers', header_level=1)
+            self.writeMarkdownFile('%s.md' % self.config.containersfile, md)
+        if self.config.outputjson:
+            jsonout = self.generateJsonList(dd.containers)
+            self.writeJsonFile('%s.json' % self.config.containersfile, jsonout)
 
 #Some quick logging helpers
 def log_warn(text):
@@ -1134,7 +1400,7 @@ def test_adws_port(host, port=9389, timeout=5):
         return False
 
 def main():
-    parser = argparse.ArgumentParser(description='Domain information dumper via ADWS. Dumps users/computers/groups and OS/membership information to HTML/JSON/greppable output.')
+    parser = argparse.ArgumentParser(description='Domain information dumper via ADWS. Dumps users/computers/groups and OS/membership information to HTML/JSON/greppable/Markdown output.')
     parser._optionals.title = "Main options"
     parser._positionals.title = "Required options"
 
@@ -1151,11 +1417,19 @@ def main():
     outputgroup.add_argument("--no-html", action='store_true', help="Disable HTML output")
     outputgroup.add_argument("--no-json", action='store_true', help="Disable JSON output")
     outputgroup.add_argument("--no-grep", action='store_true', help="Disable Greppable output")
+    outputgroup.add_argument("--markdown", action='store_true', help="Also write Markdown output (.md files)")
+    outputgroup.add_argument("--bloodhound", action='store_true', help="Write BloodHound-compatible JSON and zip it for import (bloodhound_<domain>.zip)")
+    outputgroup.add_argument("--acl", action='store_true', help="Parse DACLs from nTSecurityDescriptor into BloodHound Aces (requires --bloodhound; ADWS only)")
+    outputgroup.add_argument("--adcs", action='store_true', help="Collect AD CS (certificate templates, enterprise CAs) for BloodHound (requires --bloodhound; ADWS only; included in --all)")
     outputgroup.add_argument("--grouped-json", action='store_true', default=False, help="Also write json files for grouped files (default: disabled)")
     outputgroup.add_argument("-d", "--delimiter", help="Field delimiter for greppable output (default: tab)")
 
     #Additional options
     miscgroup = parser.add_argument_group("Misc options")
+    miscgroup.add_argument("-a", "--all", action='store_true',
+                           help="Collect extended ADWS attributes and extra object types (GPOs, OUs, containers). "
+                                "All fetched attributes are included in JSON/HTML/grep/Markdown output and in the "
+                                "BloodHound export when --bloodhound is used. Enables --adcs and works with --acl for DACL/object-control edges.")
     miscgroup.add_argument("-r", "--resolve", action='store_true', help="Resolve computer hostnames (might take a while and cause high traffic on large networks)")
     miscgroup.add_argument("-n", "--dns-server", help="Use custom DNS resolver instead of system DNS (try a domain controller IP)")
     miscgroup.add_argument("-m", "--minimal", action='store_true', default=False, help="Only query minimal set of attributes to limit memmory usage")
@@ -1173,6 +1447,12 @@ def main():
     #Minimal attributes?
     if args.minimal:
         cnf.minimal = True
+    if args.all:
+        cnf.collect_all = True
+        cnf.collect_adcs = True
+        if cnf.minimal:
+            log_warn('--all overrides --minimal (extended collection enabled)')
+            cnf.minimal = False
     #Custom separator?
     if args.delimiter is not None:
         cnf.grepsplitchar = args.delimiter
@@ -1185,6 +1465,20 @@ def main():
     #Disable grep?
     if args.no_grep:
         cnf.outputgrep = False
+    #Enable markdown?
+    if args.markdown:
+        cnf.outputmarkdown = True
+    #Enable bloodhound?
+    if args.bloodhound:
+        cnf.outputbloodhound = True
+    if args.acl:
+        if not args.bloodhound:
+            parser.error('--acl requires --bloodhound')
+        cnf.collect_acl = True
+    if args.adcs:
+        if not args.bloodhound:
+            parser.error('--adcs requires --bloodhound')
+        cnf.collect_adcs = True
     #Custom outdir?
     if args.outdir is not None:
         cnf.basepath = args.outdir

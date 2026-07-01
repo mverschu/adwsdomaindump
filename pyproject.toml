@@ -15,7 +15,8 @@ license = {text = "MIT"}
 dependencies = [
   "dnspython",
   "impacket>=0.11.0",
-  "pycryptodomex"
+  "pycryptodomex",
+  "certihound>=0.3.2",
 ]
 
 [tool.setuptools.packages.find]
@@ -27,5 +28,3 @@ adwsdomaindump = ["style.css"]
 
 [project.scripts]
 adwsdomaindump = "adwsdomaindump:main"
-adwsd2bloodhound = "adwsdomaindump.convert:ldd2bloodhound"
-adwsd2pretty = "adwsdomaindump.pretty:main"

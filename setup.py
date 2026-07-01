@@ -11,7 +11,7 @@ setup(name='adwsdomaindump',
       package_data={'adwsdomaindump': ['style.css']},
       include_package_data=True,
       entry_points= {
-        'console_scripts': ['adwsdomaindump=adwsdomaindump:main','adwsd2bloodhound=adwsdomaindump.convert:ldd2bloodhound','adwsd2pretty=adwsdomaindump.pretty:main']
+        'console_scripts': ['adwsdomaindump=adwsdomaindump:main']
       },
       license="MIT",
       )
