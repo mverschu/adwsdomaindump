@@ -18,7 +18,7 @@ All collection goes through **ADWS** (`ADWSConnection` on port 9389). The tool d
 | Protocol | ADWS (9389) | LDAP (+ host collection for sessions) |
 | Users, groups, computers, trusts | Yes | Yes |
 | GPOs, OUs, containers | With `--all` | Yes |
-| BloodHound DACL edges | `--bloodhound --acl` | Yes |
+| BloodHound DACL edges | `--bloodhound --all` | Yes |
 | AD CS (directory objects) | `--bloodhound --adcs` or `--all` | Yes (+ registry/HTTP for some ESC) |
 | Sessions / local admin / RDP | No | Yes |
 

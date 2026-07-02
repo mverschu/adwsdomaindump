@@ -52,7 +52,8 @@ ACL_ATTRIBUTES = ['nTSecurityDescriptor', 'msDS-GroupMSAMembership']
 
 
 def with_acl_attributes(attributes):
-    merged = list(attributes or [])
+    from .adws_wrapper import resolve_adws_attributes
+    merged = resolve_adws_attributes(attributes)
     for attr in ACL_ATTRIBUTES:
         if attr not in merged:
             merged.append(attr)

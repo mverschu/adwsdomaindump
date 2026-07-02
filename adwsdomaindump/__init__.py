@@ -226,7 +226,7 @@ class domainDumper():
     def _query_attributes(self, minimal_attributes, kind='user'):
         if self.config.minimal:
             attrs = minimal_attributes
-        elif self.config.collect_all:
+        elif self.config.collect_all or getattr(self.config, 'collect_acl', False) or getattr(self.config, 'outputbloodhound', False):
             from .bloodhound_export import (
                 extended_user_attributes, extended_computer_attributes, extended_group_attributes,
             )
@@ -237,7 +237,8 @@ class domainDumper():
             else:
                 attrs = extended_user_attributes()
         else:
-            attrs = ['*']
+            from .adws_wrapper import DEFAULT_ATTRIBUTES
+            attrs = list(DEFAULT_ATTRIBUTES)
         if getattr(self.config, 'collect_acl', False):
             from .bloodhound_export import with_acl_attributes
             attrs = with_acl_attributes(attrs)
@@ -597,7 +598,15 @@ class domainDumper():
             self.ous = self.getAllOUs()
             self.containers = self.getAllContainers()
         if getattr(self.config, 'collect_acl', False):
-            log_info('ACL parsing enabled — nTSecurityDescriptor collected via ADWS for BloodHound export')
+            targets = []
+            if self.config.outputbloodhound:
+                targets.append('BloodHound export')
+            if self.config.outputmarkdown:
+                targets.append('Markdown')
+            log_info(
+                'ACL parsing enabled — nTSecurityDescriptor collected via ADWS for %s'
+                % (' and '.join(targets) if targets else 'export')
+            )
         if getattr(self.config, 'collect_adcs', False):
             log_info('AD CS collection enabled — PKI objects collected from Configuration partition via ADWS')
         rw = reportWriter(self.config)
@@ -617,6 +626,10 @@ class domainDumper():
             log_info('Writing BloodHound JSON export')
             BloodHoundExporter(self.config).export(self)
             log_success('BloodHound export finished')
+        if getattr(self.config, 'collect_acl', False) and self.config.outputmarkdown:
+            from .acl_markdown_export import AclMarkdownExporter
+            log_info('Writing ACL Markdown export')
+            AclMarkdownExporter(self.config).export(self)
 
 class reportWriter():
     def __init__(self, config):
@@ -1419,7 +1432,7 @@ def main():
     outputgroup.add_argument("--no-grep", action='store_true', help="Disable Greppable output")
     outputgroup.add_argument("--markdown", action='store_true', help="Also write Markdown output (.md files)")
     outputgroup.add_argument("--bloodhound", action='store_true', help="Write BloodHound-compatible JSON and zip it for import (bloodhound_<domain>.zip)")
-    outputgroup.add_argument("--acl", action='store_true', help="Parse DACLs from nTSecurityDescriptor into BloodHound Aces (requires --bloodhound; ADWS only)")
+    outputgroup.add_argument("--acl", action='store_true', help="Parse DACLs from nTSecurityDescriptor without --all (requires --bloodhound and/or --markdown; included in --all)")
     outputgroup.add_argument("--adcs", action='store_true', help="Collect AD CS (certificate templates, enterprise CAs) for BloodHound (requires --bloodhound; ADWS only; included in --all)")
     outputgroup.add_argument("--grouped-json", action='store_true', default=False, help="Also write json files for grouped files (default: disabled)")
     outputgroup.add_argument("-d", "--delimiter", help="Field delimiter for greppable output (default: tab)")
@@ -1429,7 +1442,7 @@ def main():
     miscgroup.add_argument("-a", "--all", action='store_true',
                            help="Collect extended ADWS attributes and extra object types (GPOs, OUs, containers). "
                                 "All fetched attributes are included in JSON/HTML/grep/Markdown output and in the "
-                                "BloodHound export when --bloodhound is used. Enables --adcs and works with --acl for DACL/object-control edges.")
+                                "BloodHound export when --bloodhound is used. Enables --adcs and --acl (DACL parsing).")
     miscgroup.add_argument("-r", "--resolve", action='store_true', help="Resolve computer hostnames (might take a while and cause high traffic on large networks)")
     miscgroup.add_argument("-n", "--dns-server", help="Use custom DNS resolver instead of system DNS (try a domain controller IP)")
     miscgroup.add_argument("-m", "--minimal", action='store_true', default=False, help="Only query minimal set of attributes to limit memmory usage")
@@ -1450,6 +1463,7 @@ def main():
     if args.all:
         cnf.collect_all = True
         cnf.collect_adcs = True
+        cnf.collect_acl = True
         if cnf.minimal:
             log_warn('--all overrides --minimal (extended collection enabled)')
             cnf.minimal = False
@@ -1472,8 +1486,8 @@ def main():
     if args.bloodhound:
         cnf.outputbloodhound = True
     if args.acl:
-        if not args.bloodhound:
-            parser.error('--acl requires --bloodhound')
+        if not args.bloodhound and not args.markdown:
+            parser.error('--acl requires --bloodhound and/or --markdown')
         cnf.collect_acl = True
     if args.adcs:
         if not args.bloodhound:

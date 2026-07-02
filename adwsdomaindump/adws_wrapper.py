@@ -62,6 +62,29 @@ def normalize_adws_attributes(attributes):
     return [attr for attr in normalized if attr not in ADWS_UNSUPPORTED_ATTRIBUTES]
 
 
+def resolve_adws_attributes(attributes):
+    """
+    Expand ldap-style ['*'] wildcards before ADWS selection.
+
+    ADWS only treats a lone ['*'] as "default attributes" in search(); if ACL
+    or other attrs are merged into the list the wildcard must be expanded here,
+    otherwise AD returns every attribute and hits the size limit.
+    """
+    if attributes is None:
+        return list(DEFAULT_ATTRIBUTES)
+    resolved = []
+    if '*' in attributes:
+        resolved.extend(DEFAULT_ATTRIBUTES)
+    for attr in attributes:
+        if attr == '*':
+            continue
+        if attr not in resolved:
+            resolved.append(attr)
+    if not resolved:
+        resolved = list(DEFAULT_ATTRIBUTES)
+    return normalize_adws_attributes(resolved)
+
+
 class ADWSEntry:
     """
     Mimics ldap3 Entry class for compatibility with existing code
@@ -272,14 +295,7 @@ class ADWSConnection:
         if not self._bound:
             raise RuntimeError("Not bound to ADWS server")
         
-        if attributes is None:
-            attributes = ['*']
-        
-        # Use ALL_ATTRIBUTES equivalent
-        if attributes == ['*'] or (isinstance(attributes, list) and len(attributes) == 1 and attributes[0] == '*'):
-            attributes = list(DEFAULT_ATTRIBUTES)
-        
-        attributes = normalize_adws_attributes(attributes)
+        attributes = resolve_adws_attributes(attributes)
         try:
             # Use pull to get all results
             pull_result = self._adws_client.pull(

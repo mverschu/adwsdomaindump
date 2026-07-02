@@ -28,7 +28,7 @@ Creates:
 Re-collect:
 
 ```sh
-adwsdomaindump -u 'DOMAIN\Administrator' -p 'pass' dc -o ./out --all --bloodhound --acl
+adwsdomaindump -u 'DOMAIN\Administrator' -p 'pass' dc -o ./out --all --bloodhound
 ```
 
 ## AD CS lab (directory objects)
@@ -50,7 +50,7 @@ Install-WindowsFeature AD-Certificate -IncludeManagementTools
 Install-AdcsCertificationAuthority -CAType EnterpriseRootCA -CACommonName YOUR-CA -Force
 ```
 
-Then re-run collection with `--all --bloodhound --acl`.
+Then re-run collection with `--all --bloodhound`.
 
 ## Cypher examples (BloodHound CE)
 
