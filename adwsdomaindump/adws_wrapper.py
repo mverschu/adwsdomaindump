@@ -252,7 +252,9 @@ class ADWSConnection:
             hashes = None
             password = self.password
             if password and ':' in password and len(password.split(':')) == 2:
-                hashes = password
+                # Split LM:NTLM and pass only NTLM hash
+                lm_hash, nt_hash = password.split(':')
+                hashes = nt_hash  # Use only NT hash for NTLM auth
                 password = None
             
             # Create NTLM auth
