@@ -7,7 +7,6 @@ Documentation for [ADWSDomainDump](https://github.com/mverschu/adwsdomaindump) �
 - **[Output formats & flags](Output-formats-and-flags)** — HTML, JSON, grep, Markdown, `--all`, `--minimal`, `--resolve`
 - **[BloodHound export](BloodHound-export)** — `--bloodhound`, `--acl`, zip ingest, ACL parsing
 - **[AD CS collection](AD-CS-collection)** — `--adcs`, Configuration partition, limits vs SharpHound/Certipy
-- **[Lab test data](Lab-test-data)** — local seed scripts for BloodHound labs (not in repo)
 
 ## How it works
 
