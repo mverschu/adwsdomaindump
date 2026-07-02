@@ -8,8 +8,6 @@ Collection uses **ADWS** (port 9389) against the **Configuration** naming contex
 
 Parsing and BloodHound CE JSON use [CertiHound](https://pypi.org/project/certihound/) behind an ADWS search adapter (`ADWSConnection.search()`).
 
-Lab seed scripts (local, not in repo) may use LDAP to **create** demo PKI objects; that is separate from collection.
-
 ## Objects collected (when present in AD)
 
 | Object | Location (under `CN=Configuration,...`) | BloodHound file |
@@ -34,8 +32,6 @@ Lab seed scripts (local, not in repo) may use LDAP to **create** demo PKI object
 | ESC8 (confirmed) | HTTP web enrollment / EPA checks on CA |
 | Live issuance | CertSrv / enrollment API on host |
 | Full production PKI without AD CS feature | No real `pKIEnrollmentService` until AD CS is installed |
-
-If the **AD CS Windows feature** is not installed, there may be no CertSvc — optional LDAP seeding can still add template/CA **directory objects** for BloodHound testing (see [[Lab-test-data]]).
 
 ## Example stdout
 
