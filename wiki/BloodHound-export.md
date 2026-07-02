@@ -8,20 +8,23 @@ Requires `--bloodhound`. Produces `bloodhound_<domain>.zip` for BloodHound CE (A
 |------|-------------|
 | `--bloodhound` | Export users, groups, computers, domains (JSON v5/v6) |
 | `--all` | Also gpos, ous, containers; enables `--adcs` |
-| `--acl` | Parse `nTSecurityDescriptor` into `Aces` on BloodHound objects |
+| `--acl` | Parse `nTSecurityDescriptor` into `Aces` (included in `--all`; also writes `domain_*_aces.md` with `--markdown`) |
 | `--adcs` | AD CS objects from Configuration partition (included in `--all`) |
 
 Example:
 
 ```sh
 adwsdomaindump -u 'DOMAIN\user' -p 'pass' dc.example.com \
-  --all --bloodhound --acl -o ./out
+  --all --bloodhound -o ./out
 ```
 
 ## ACL collection (`--acl`)
 
+Requires `--bloodhound` and/or `--markdown`. Included automatically when using `--all`.
+
 - Fetches security descriptors via **ADWS** only.
 - Populates BloodHound `Aces`: `GenericAll`, `WriteDacl`, `ForceChangePassword`, `AddMember`, `GetChanges` / `GetChangesAll` (DCSync), etc.
+- With `--markdown`, also writes `domain_*_aces.md` tables (object, right, principal, inherited, …).
 - Requires read access to `nTSecurityDescriptor` on target objects.
 
 Stdout includes per-file ACE counts and a summary, for example:
@@ -33,7 +36,7 @@ Stdout includes per-file ACE counts and a summary, for example:
 
 If ACE counts are **0**, check account rights or reinstall from current source.
 
-## Zip contents (typical `--all --bloodhound --acl`)
+## Zip contents (typical `--all --bloodhound`)
 
 | File | Description |
 |------|-------------|
