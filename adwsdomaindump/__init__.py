@@ -129,12 +129,68 @@ trust_type = {'DOWNLEVEL':0x01,
               'UPLEVEL':0x02,
               'MIT':0x03}
 
+def get_full_build_number(hostname, domain, username, password, lm_hash='', nt_hash='', timeout=5):
+    """
+    Query the full OS build number (e.g. "14393.8246") from a remote Windows host
+    via the Remote Registry protocol over SMB.
+
+    Requires the RemoteRegistry service to be running on the target. Any
+    authenticated domain user can read HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion
+    without admin privileges (default ACL grants Authenticated Users read access).
+
+    Returns a string like "14393.8246" on success, or None on failure.
+    """
+    try:
+        from impacket.smbconnection import SMBConnection
+        from impacket.dcerpc.v5 import transport, rrp
+    except ImportError:
+        return None
+
+    smb = None
+    dce = None
+    try:
+        smb = SMBConnection(hostname, hostname, sess_port=445, timeout=timeout)
+        smb.login(username, password, domain, lmhash=lm_hash, nthash=nt_hash)
+
+        rpc_transport = transport.SMBTransport(hostname, filename=r'\winreg', smb_connection=smb)
+        dce = rpc_transport.get_dce_rpc()
+        dce.connect()
+        dce.bind(rrp.MSRPC_UUID_RRP)
+
+        root_handle = rrp.hOpenLocalMachine(dce)['phKey']
+        key_handle = rrp.hBaseRegOpenKey(dce, root_handle,
+                                          r'SOFTWARE\Microsoft\Windows NT\CurrentVersion')['phkResult']
+
+        _, build_str = rrp.hBaseRegQueryValue(dce, key_handle, 'CurrentBuildNumber')
+        _, ubr = rrp.hBaseRegQueryValue(dce, key_handle, 'UBR')
+
+        rrp.hBaseRegCloseKey(dce, key_handle)
+        rrp.hBaseRegCloseKey(dce, root_handle)
+
+        build_str = build_str.rstrip('\x00') if isinstance(build_str, str) else str(build_str)
+        return '%s.%s' % (build_str, ubr)
+    except Exception:
+        return None
+    finally:
+        try:
+            if dce:
+                dce.disconnect()
+        except Exception:
+            pass
+        try:
+            if smb:
+                smb.logoff()
+        except Exception:
+            pass
+
+
 # Common attribute pretty translations
 attr_translations = {'sAMAccountName':'SAM Name',
                      'cn':'CN',
                      'operatingSystem':'Operating System',
                      'operatingSystemServicePack':'Service Pack',
                      'operatingSystemVersion':'OS Version',
+                     'operatingSystemBuildNumber':'OS Build',
                      'userAccountControl':'Flags',
                      'objectSid':'SID',
                      'memberOf':'Member of groups',
@@ -199,6 +255,7 @@ class domainDumpConfig():
         self.lookuphostnames = False #Look up hostnames of computers to get their IP address
         self.dnsserver = '' #Addres of the DNS server to use, if not specified default DNS will be used
         self.minimal = False #Only query minimal list of attributes
+        self.full_build = False #Enrich computers with full OS build (e.g. 14393.8246) via remote registry
 
 #Domaindumper main class
 class domainDumper():
@@ -478,6 +535,57 @@ class domainDumper():
             #Add the attribute to the entry's dictionary
             computer._attributes['IPv4'] = ipatt
 
+    def enrichComputerBuildNumbers(self):
+        """
+        For each computer, attempt a remote-registry lookup to retrieve the full
+        OS build number (CurrentBuildNumber.UBR, e.g. "14393.8246") and inject it
+        as the synthetic 'operatingSystemBuildNumber' attribute.
+
+        Requires the RemoteRegistry service running on each target. Any authenticated
+        domain user can read HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion
+        without admin privileges.
+        """
+        domain = self.server.domain
+        username = self.connection.user or ''
+        password = self.connection.password or ''
+        lm_hash = ''
+        nt_hash = ''
+
+        if '\\' in username:
+            domain, username = username.split('\\', 1)
+        elif '@' in username:
+            username, domain = username.rsplit('@', 1)
+
+        if password and ':' in password and len(password.split(':')) == 2:
+            lm_hash, nt_hash = password.split(':', 1)
+            password = ''
+
+        total = len(self.computers)
+        success = 0
+        log_info('Fetching full OS build numbers via remote registry (%d computers)' % total)
+        for computer in self.computers:
+            try:
+                hostname = computer['dNSHostName'].value if 'dNSHostName' in computer else None
+                if not hostname:
+                    cn = computer['cn'].value if 'cn' in computer else None
+                    hostname = '%s.%s' % (cn, self.server.domain) if cn else None
+                if not hostname:
+                    continue
+
+                full_build = get_full_build_number(hostname, domain, username, password,
+                                                   lm_hash=lm_hash, nt_hash=nt_hash)
+                if full_build:
+                    computer._attributes['operatingSystemBuildNumber'] = ADWSAttribute(
+                        'operatingSystemBuildNumber', full_build)
+                    success += 1
+            except Exception:
+                continue
+
+        if success == 0 and total > 0:
+            log_warn('Full build numbers: 0/%d — check RemoteRegistry service and SMB reachability on targets' % total)
+        else:
+            log_info('Full build numbers retrieved for %d/%d computers' % (success, total))
+
     #Create a dictionary of all operating systems with the computer accounts that are associated
     def sortComputersByOS(self, items):
         osdict = {}
@@ -590,6 +698,8 @@ class domainDumper():
         self.groups = self.getAllGroups()
         if self.config.lookuphostnames:
             self.lookupComputerDnsNames()
+        if getattr(self.config, 'full_build', False):
+            self.enrichComputerBuildNumbers()
         self.policy = self.getDomainPolicy()
         self.trusts = self.getTrusts()
         if self.config.collect_all:
@@ -639,6 +749,8 @@ class reportWriter():
             self.computerattributes = ['cn', 'sAMAccountName', 'dNSHostName', 'IPv4', 'operatingSystem', 'operatingSystemServicePack', 'operatingSystemVersion', 'lastLogon', 'userAccountControl', 'whenCreated', 'objectSid', 'description']
         else:
             self.computerattributes = ['cn', 'sAMAccountName', 'dNSHostName', 'operatingSystem', 'operatingSystemServicePack', 'operatingSystemVersion', 'lastLogon', 'userAccountControl', 'whenCreated', 'objectSid', 'description']
+        if getattr(self.config, 'full_build', False):
+            self.computerattributes.append('operatingSystemBuildNumber')
         self.userattributes = ['cn', 'name', 'sAMAccountName', 'memberOf', 'primaryGroupId', 'whenCreated', 'whenChanged', 'lastLogon', 'userAccountControl', 'pwdLastSet', 'objectSid', 'description', 'servicePrincipalName']
         #In grouped view, don't include the memberOf property to reduce output size
         self.userattributes_grouped = ['cn', 'name', 'sAMAccountName', 'whenCreated', 'whenChanged', 'lastLogon', 'userAccountControl', 'pwdLastSet', 'objectSid', 'description', 'servicePrincipalName']
@@ -1444,6 +1556,10 @@ def main():
                                 "All fetched attributes are included in JSON/HTML/grep/Markdown output and in the "
                                 "BloodHound export when --bloodhound is used. Enables --adcs and --acl (DACL parsing).")
     miscgroup.add_argument("-r", "--resolve", action='store_true', help="Resolve computer hostnames (might take a while and cause high traffic on large networks)")
+    miscgroup.add_argument("--full-build", action='store_true', default=False,
+                           help="Enrich computers with the full OS build number (e.g. 14393.8246) via remote registry over SMB. "
+                                "Requires RemoteRegistry service on each target. Any authenticated domain user can read this "
+                                "(no admin required). Not included in BloodHound export.")
     miscgroup.add_argument("-n", "--dns-server", help="Use custom DNS resolver instead of system DNS (try a domain controller IP)")
     miscgroup.add_argument("-m", "--minimal", action='store_true', default=False, help="Only query minimal set of attributes to limit memmory usage")
     miscgroup.add_argument("--force", action='store_true', help="Skip ADWS port connectivity check")
@@ -1467,6 +1583,8 @@ def main():
         if cnf.minimal:
             log_warn('--all overrides --minimal (extended collection enabled)')
             cnf.minimal = False
+    if args.full_build:
+        cnf.full_build = True
     #Custom separator?
     if args.delimiter is not None:
         cnf.grepsplitchar = args.delimiter

@@ -70,6 +70,37 @@ adwsdomaindump -u 'corp.local\Administrator' -p 'password' dc01.corp.local \
 
 More detail (flags, file list, BloodHound/AD CS): **[wiki](https://github.com/mverschu/adwsdomaindump/wiki)**.
 
+## Full OS Build Numbers (`--full-build`)
+
+Active Directory only stores the major build in `operatingSystemVersion` (e.g. `10.0 (14393)`).
+Use `--full-build` to enrich each computer with the **full cumulative-update build number**
+(e.g. `14393.8246`) by querying the Remote Registry over SMB.
+
+```sh
+adwsdomaindump -u 'corp.local\jsmith' -p 'password' dc01.corp.local --full-build
+```
+
+The `operatingSystemBuildNumber` column (labelled **OS Build** in HTML/Markdown) will then show
+values like:
+
+| OS | `operatingSystemVersion` | `operatingSystemBuildNumber` |
+|----|--------------------------|------------------------------|
+| Windows Server 2016 | `10.0 (14393)` | `14393.8246` |
+| Windows Server 2019 | `10.0 (17763)` | `17763.8644` |
+| Windows Server 2022 | `10.0 (20348)` | `20348.5020` |
+| Windows Server 2025 | `10.0 (26100)` | `26100.32690` |
+
+**No admin required** — `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` grants read access
+to all **Authenticated Users** by default. Any standard domain user account can perform this lookup.
+
+**Requirements:**
+- `RemoteRegistry` service must be running on each target (default on Windows Server; often disabled on workstations)
+- SMB port 445 reachable from the scanning host
+- Included in HTML, JSON, greppable, and Markdown output — **not** in the BloodHound export
+
+Hosts where the lookup fails (unreachable, RemoteRegistry stopped) are silently skipped; the
+`operatingSystemBuildNumber` column will simply be absent for those entries.
+
 ## Evasion
 
 Currently tested against:

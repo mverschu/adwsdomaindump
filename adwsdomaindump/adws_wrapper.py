@@ -48,6 +48,8 @@ DEFAULT_ATTRIBUTES = list(CORE_OBJECT_ATTRIBUTES)
 ADWS_UNSUPPORTED_ATTRIBUTES = frozenset({
     'msDS-MachineAccountQuota',
     'ms-DS-MachineAccountQuota',
+    # synthetic attribute injected after remote-registry enrichment, never an AD attribute
+    'operatingSystemBuildNumber',
 })
 
 # Common ldapdomaindump-style names that ADWS rejects
