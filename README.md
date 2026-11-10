@@ -109,6 +109,7 @@ Currently tested against:
 |-----|----------|
 | Microsoft Defender for Endpoint | Yes |
 | CrowdStrike Falcon | Yes |
+| ESET EDR | Yes |
 
 
 ## Credits
