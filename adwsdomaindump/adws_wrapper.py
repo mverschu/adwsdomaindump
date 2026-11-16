@@ -275,6 +275,9 @@ class ADWSConnection:
             if self._root_dn:
                 self.server.info.other['defaultNamingContext'] = [self._root_dn]
             domain_dn = f"DC={',DC='.join(self.server.domain.split('.'))}"
+            naming_contexts = rootdse.get('namingContexts') or []
+            if naming_contexts:
+                self.server.info.other['namingContexts'] = naming_contexts
             for key, fallback in (
                 ('configurationNamingContext', f"CN=Configuration,{domain_dn}"),
                 ('schemaNamingContext', None),

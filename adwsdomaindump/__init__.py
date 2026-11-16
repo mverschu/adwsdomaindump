@@ -256,6 +256,8 @@ class domainDumpConfig():
         self.dnsserver = '' #Addres of the DNS server to use, if not specified default DNS will be used
         self.minimal = False #Only query minimal list of attributes
         self.full_build = False #Enrich computers with full OS build (e.g. 14393.8246) via remote registry
+        self.collect_cross_forest = False #Other domains in the forest and trusted external forests
+        self._basepath_root = self.basepath
 
 #Domaindumper main class
 class domainDumper():
@@ -515,7 +517,10 @@ class domainDumper():
         dnsresolver = dns.resolver.Resolver()
         dnsresolver.lifetime = 2
         if self.config.dnsserver != '':
-            dnsresolver.nameservers = [self.config.dnsserver]
+            from .forest_collect import dns_server_nameserver_ips
+            ns_ips = dns_server_nameserver_ips(self.config.dnsserver)
+            if ns_ips:
+                dnsresolver.nameservers = ns_ips
         for computer in self.computers:
             try:
                 dns_hostname = computer['dNSHostName'].value if 'dNSHostName' in computer else None
@@ -1524,6 +1529,69 @@ def test_adws_port(host, port=9389, timeout=5):
     except Exception:
         return False
 
+
+def collect_cross_forest_dumps(primary_dd, server, connection, config, user, password, dns_server='', force=False):
+    """
+    After the primary domain dump: enumerate every other domain NC on this DC,
+    then attempt ADWS dumps of trusted external forests via their DCs.
+    """
+    from .forest_collect import (
+        extra_forest_domains,
+        trusted_external_domain_names,
+        domain_naming_contexts,
+        naming_context_to_dns,
+        clone_config_for_domain,
+        connect_adws_domain,
+    )
+
+    config._basepath_root = getattr(config, '_basepath_root', config.basepath)
+    local_dns = {
+        (naming_context_to_dns(nc) or '').lower()
+        for nc in domain_naming_contexts(server)
+    }
+
+    for domain_dns, nc in extra_forest_domains(server, primary_dd.root):
+        log_info('Cross-forest: collecting in-forest domain %s (NC %s)' % (domain_dns, nc))
+        previous_domain = server.domain
+        server.domain = domain_dns
+        try:
+            sub_cfg = clone_config_for_domain(config, domain_dns)
+            sub_dd = domainDumper(server, connection, sub_cfg, root=nc)
+            sub_dd.domainDump()
+            log_success('Domain dump finished for in-forest domain %s' % domain_dns)
+        except Exception as exc:
+            log_warn('In-forest collection failed for %s: %s' % (domain_dns, exc))
+        finally:
+            server.domain = previous_domain
+
+    # Trusted domains: separate ADWS connections to a DC in the target forest
+    if primary_dd.trusts is None:
+        primary_dd.trusts = primary_dd.getTrusts()
+    for domain_dns in trusted_external_domain_names(primary_dd.trusts):
+        if domain_dns.lower() in local_dns:
+            continue
+        def _cross_forest_log(level, msg):
+            if level == 'info':
+                log_info(msg)
+            elif level == 'success':
+                log_success(msg)
+            else:
+                log_warn(msg)
+
+        remote_server, remote_conn, _dc_host = connect_adws_domain(
+            domain_dns, user, password, dns_server=dns_server, force=force, log=_cross_forest_log,
+        )
+        if remote_conn is None:
+            continue
+        try:
+            sub_cfg = clone_config_for_domain(config, domain_dns)
+            remote_dd = domainDumper(remote_server, remote_conn, sub_cfg)
+            remote_dd.domainDump()
+            log_success('Domain dump finished for trusted domain %s' % domain_dns)
+        except Exception as exc:
+            log_warn('Trusted forest collection failed for %s: %s' % (domain_dns, exc))
+
+
 def main():
     parser = argparse.ArgumentParser(description='Domain information dumper via ADWS. Dumps users/computers/groups and OS/membership information to HTML/JSON/greppable/Markdown output.')
     parser._optionals.title = "Main options"
@@ -1562,6 +1630,10 @@ def main():
                                 "(no admin required). Not included in BloodHound export.")
     miscgroup.add_argument("-n", "--dns-server", help="Use custom DNS resolver instead of system DNS (try a domain controller IP)")
     miscgroup.add_argument("-m", "--minimal", action='store_true', default=False, help="Only query minimal set of attributes to limit memmory usage")
+    miscgroup.add_argument("--cross-forest", action='store_true',
+                           help="Also dump other domains in the same forest (from RootDSE naming contexts) "
+                                "and, when credentials allow, trusted external forests via their DCs. "
+                                "Extra domains are written under subdirectories of the output path.")
     miscgroup.add_argument("--force", action='store_true', help="Skip ADWS port connectivity check")
 
     args = parser.parse_args()
@@ -1585,6 +1657,8 @@ def main():
             cnf.minimal = False
     if args.full_build:
         cnf.full_build = True
+    if args.cross_forest:
+        cnf.collect_cross_forest = True
     #Custom separator?
     if args.delimiter is not None:
         cnf.grepsplitchar = args.delimiter
@@ -1614,6 +1688,7 @@ def main():
     #Custom outdir?
     if args.outdir is not None:
         cnf.basepath = args.outdir
+    cnf._basepath_root = cnf.basepath
     #Do we really need grouped json files?
     cnf.groupedjson = args.grouped_json
 
@@ -1683,6 +1758,12 @@ def main():
     #Do the actual dumping
     dd.domainDump()
     log_success('Domain dump finished')
+    if cnf.collect_cross_forest:
+        log_info('Cross-forest collection enabled — gathering additional domains')
+        collect_cross_forest_dumps(
+            dd, s, c, cnf, args.user, args.password,
+            dns_server=cnf.dnsserver, force=args.force,
+        )
 
 if __name__ == '__main__':
     main()
