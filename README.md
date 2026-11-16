@@ -1,5 +1,8 @@
 # ADWSDomainDump
-Active Directory information dumper via ADWS (Active Directory Web Services).</br>
+
+Active Directory information dumper via ADWS (Active Directory Web Services).
+
+**Repository:** [github.com/mverschu/adwsdomaindump](https://github.com/mverschu/adwsdomaindump)
 <img width="350" height="350" alt="image" src="https://github.com/user-attachments/assets/6d624141-005c-49a1-88ee-e6c431ff0b57" />
 
 ## Install
@@ -114,7 +117,7 @@ Currently tested against:
 
 ## Credits
 
-This project is a fork/adaptation of [ldapdomaindump](https://github.com/dirkjanm/ldapdomaindump) by Dirk-jan Mollema, converted to use ADWS instead of LDAP.
+This project ([adwsdomaindump](https://github.com/mverschu/adwsdomaindump)) is a fork/adaptation of [ldapdomaindump](https://github.com/dirkjanm/ldapdomaindump) by Dirk-jan Mollema, converted to use ADWS instead of LDAP.
 
 Original work: Copyright (c) 2017 Dirk-jan Mollema
 

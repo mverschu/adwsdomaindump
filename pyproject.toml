@@ -9,7 +9,6 @@ description = "Active Directory information dumper via ADWS"
 authors = [
   { name = "mverschu" }
 ]
-urls = { "Homepage" = "https://github.com/dirkjanm/ldapdomaindump/" }
 requires-python = ">=3.6"
 license = {text = "MIT"}
 dependencies = [
@@ -18,6 +17,12 @@ dependencies = [
   "pycryptodomex",
   "certihound>=0.3.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mverschu/adwsdomaindump"
+Repository = "https://github.com/mverschu/adwsdomaindump"
+Documentation = "https://github.com/mverschu/adwsdomaindump/wiki"
+Issues = "https://github.com/mverschu/adwsdomaindump/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
