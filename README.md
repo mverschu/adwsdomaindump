@@ -3,6 +3,7 @@
 Active Directory information dumper via ADWS (Active Directory Web Services).
 
 **Repository:** [github.com/mverschu/adwsdomaindump](https://github.com/mverschu/adwsdomaindump)
+
 <img width="350" height="350" alt="image" src="https://github.com/user-attachments/assets/6d624141-005c-49a1-88ee-e6c431ff0b57" />
 
 ## Install
