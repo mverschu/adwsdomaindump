@@ -25,6 +25,7 @@ Disable default outputs: `--no-html`, `--no-json`, `--no-grep`. Enable Markdown:
 | **Markdown ACLs** | off | `domain_*_aces.md` | Parsed DACL / ACE tables | Requires `--markdown --all` (or `--markdown --acl`) |
 | **Grouped JSON** | off | `domain_users_by_group.json`, etc. | Nested membership views | Not BloodHound format |
 | **BloodHound** | off | `bloodhound_<domain>.zip` | BloodHound CE import | AD data only — no sessions |
+| **`--convert`** | off | `<input>_ce.zip` | Fix legacy BH exports for CE (trust strings, schema v6) | No live AD query — input file only |
 
 ## Standard output files
 

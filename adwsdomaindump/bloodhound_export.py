@@ -1,5 +1,5 @@
 """
-Export ADWS domain dump data in BloodHound-compatible JSON format (schema version 5).
+Export ADWS domain dump data in BloodHound-compatible JSON format (schema version 6).
 
 Produces users.json, groups.json, computers.json and domains.json suitable for
 import into BloodHound CE / bloodhound.py (group + objectprops + trusts collection).
@@ -203,12 +203,21 @@ HIGHVALUE_GROUP_SIDS = {
     "S-1-5-32-548",
 }
 
-BH_TRUST_TYPE = {
-    "ParentChild": 0,
-    "CrossLink": 1,
-    "Forest": 2,
-    "External": 3,
-    "Unknown": 4,
+BLOODHOUND_SCHEMA_VERSION = 6
+
+# BloodHound CE ingest expects string trust enums (see bloodhound/ad/trusts.py on bloodhound-ce).
+BH_TRUST_DIRECTION = {
+    0: "Disabled",
+    1: "Inbound",
+    2: "Outbound",
+    3: "Bidirectional",
+}
+BH_TRUST_TYPE_BY_ID = {
+    0: "ParentChild",
+    1: "CrossLink",
+    2: "Forest",
+    3: "External",
+    4: "Unknown",
 }
 
 TRUST_FLAGS = {
@@ -409,7 +418,7 @@ class BloodHoundExporter:
                 "methods": 0,
                 "type": obj_type,
                 "count": len(items),
-                "version": 5,
+                "version": BLOODHOUND_SCHEMA_VERSION,
             },
         }
         with codecs.open(outfile, "w", "utf-8") as out:
@@ -1124,8 +1133,8 @@ class BloodHoundExporter:
             "TargetDomainName": target_name.upper(),
             "TargetDomainSid": target_sid,
             "IsTransitive": is_transitive,
-            "TrustDirection": direction,
-            "TrustType": BH_TRUST_TYPE.get(trusttype, 4),
+            "TrustDirection": BH_TRUST_DIRECTION.get(direction, "Disabled"),
+            "TrustType": trusttype,
             "SidFilteringEnabled": sid_filtering,
         }
 

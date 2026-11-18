@@ -6,7 +6,8 @@ Requires `--bloodhound`. Produces `bloodhound_<domain>.zip` for BloodHound CE (A
 
 | Flag | Description |
 |------|-------------|
-| `--bloodhound` | Export users, groups, computers, domains (JSON v5/v6) |
+| `--bloodhound` | Export users, groups, computers, domains (JSON schema v6) |
+| `--convert PATH` | Upgrade an existing BloodHound zip/JSON (numeric trust enums, older `meta.version`) for CE — no AD connection |
 | `--all` | Also gpos, ous, containers; enables `--adcs` |
 | `--acl` | Parse `nTSecurityDescriptor` into `Aces` (included in `--all`; also writes `domain_*_aces.md` with `--markdown`) |
 | `--adcs` | AD CS objects from Configuration partition (included in `--all`) |

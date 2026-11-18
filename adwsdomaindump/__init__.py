@@ -1599,7 +1599,8 @@ def main():
 
     #Main parameters
     #maingroup = parser.add_argument_group("Main options")
-    parser.add_argument("host", type=str, metavar='HOSTNAME', help="Hostname/ip of domain controller to connect to via ADWS (port 9389)")
+    parser.add_argument("host", type=str, metavar='HOSTNAME', nargs='?',
+                        help="Hostname/ip of domain controller to connect to via ADWS (port 9389); omit with --convert")
     parser.add_argument("-u", "--user", type=str, metavar='USERNAME', help="DOMAIN\\username or user@domain.com for authentication")
     parser.add_argument("-p", "--password", type=str, metavar='PASSWORD', help="Password or LM:NTLM hash, will prompt if not specified")
     parser.add_argument("-at", "--authtype", type=str, choices=['NTLM'], default='NTLM', help="Authentication type (NTLM only for ADWS, default: NTLM)")
@@ -1612,6 +1613,8 @@ def main():
     outputgroup.add_argument("--no-grep", action='store_true', help="Disable Greppable output")
     outputgroup.add_argument("--markdown", action='store_true', help="Also write Markdown output (.md files)")
     outputgroup.add_argument("--bloodhound", action='store_true', help="Write BloodHound-compatible JSON and zip it for import (bloodhound_<domain>.zip)")
+    outputgroup.add_argument("--convert", metavar="PATH", type=str,
+                             help="Convert a legacy BloodHound zip or JSON export to CE schema v6 (string trust enums); no AD connection")
     outputgroup.add_argument("--acl", action='store_true', help="Parse DACLs from nTSecurityDescriptor without --all (requires --bloodhound and/or --markdown; included in --all)")
     outputgroup.add_argument("--adcs", action='store_true', help="Collect AD CS (certificate templates, enterprise CAs) for BloodHound (requires --bloodhound; ADWS only; included in --all)")
     outputgroup.add_argument("--grouped-json", action='store_true', default=False, help="Also write json files for grouped files (default: disabled)")
@@ -1637,6 +1640,19 @@ def main():
     miscgroup.add_argument("--force", action='store_true', help="Skip ADWS port connectivity check")
 
     args = parser.parse_args()
+
+    if args.convert:
+        from .bloodhound_convert import run_from_cli, _default_output_path
+        out = None
+        if args.outdir is not None:
+            if not os.path.isdir(args.outdir):
+                os.makedirs(args.outdir)
+            out = os.path.join(args.outdir, os.path.basename(_default_output_path(args.convert)))
+        sys.exit(run_from_cli(args.convert, out))
+
+    if not args.host:
+        parser.error('HOSTNAME is required unless --convert is used')
+
     #Create default config
     cnf = domainDumpConfig()
     #Dns lookups?
